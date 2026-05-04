@@ -1,5 +1,21 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""TDD stub. mahalanobis_sq_via_cholesky + fit_mahalanobis_full_dim per Q34 + Q68.
+"""Mahalanobis distance via Cholesky factor (Q34, Q68)."""
 
-Implement to drive the corresponding tests in tests/ to green.
-"""
+from __future__ import annotations
+
+import numpy as np
+from scipy.linalg import solve_triangular
+
+
+def mahalanobis_sq_via_cholesky(
+    x: np.ndarray,
+    centroid: np.ndarray,
+    L: np.ndarray,
+) -> float:
+    """Squared Mahalanobis distance using lower-triangular Cholesky L.
+
+    d²(x, μ) = (x - μ)ᵀ Σ⁻¹ (x - μ)  where  Σ = L Lᵀ
+    """
+    diff = x - centroid
+    y = solve_triangular(L, diff, lower=True)
+    return float(y @ y)
