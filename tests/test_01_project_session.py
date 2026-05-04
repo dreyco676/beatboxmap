@@ -92,7 +92,45 @@ Migration robustness
        chore for the implementer.]
 
 ============================================================
-WEAK CONSENSUS / OPEN QUESTIONS (4–5/9; not adopted)
+v0.12 PANEL ADDITIONS (principal-engineer synthesis;
+three of four v0.12 review agents rate-limited — Sam-equivalent
+architecture review represented by synthesis only)
+============================================================
+
+Migration partial-state observability (STRONG)
+  T29  When a registered migrator itself raises mid-walk, the loader
+       surfaces the original exception with context (which step
+       failed) AND no partial state is observable via load_session.
+       Today: a migrator raising leaves state undefined; T18 only
+       tests the happy path. Migrations are append-only and ordered;
+       a partial walk is corrupt-by-construction and must loud-fail.
+
+Forward-compat semver detection (STRONG — string-sort defeats the
+purpose of forward-compat detection)
+  T30  ForwardCompatVersionError uses semver-aware comparison, NOT
+       lexical string sort. Lexically "0.10" < "0.11" but also
+       "0.10" < "0.9" — a lexical compare fails to detect "0.9 is
+       older than 0.10" and would raise ForwardCompat on a LEGACY
+       bundle. Pin numeric semver compare with explicit cases.
+
+Save atomicity beyond mid-write failure (STRONG — T28 covers one
+failure mode; the others are equally common)
+  T31  After save_session() returns successfully, the temp file used
+       for the atomic-replace is cleaned up (no .voxkit.tmp lingering
+       siblings on disk). Hobby users have hit "what is this .tmp
+       file?" with at least three other audio tools; clean up after
+       yourself.
+
+Removals / rewrites
+  T28  REWRITE: stop patching the private symbol _finalize_bundle_write.
+       Couple to BEHAVIOR: simulate a write failure by patching the
+       bundle's open() at the OS level via monkeypatch on builtins.open
+       restricted to the target path. Implementation-name coupling
+       breaks the test if the implementer renames the private helper,
+       even though no behavioral contract changed.
+
+============================================================
+WEAK CONSENSUS / OPEN QUESTIONS (carry from v0.11 + v0.12)
 ============================================================
 
 OQ-1  Param name to_version vs target (see T29 above). Spec text and
@@ -102,6 +140,9 @@ OQ-2  Audio dtype validation: Session rejects audio that isn't float32.
       dtype; Session can assume float32 by upstream contract.]
 OQ-3  Concurrent save safety (two VoxKit processes writing to the same
       bundle). Defer; not a v1.0 use case.
+OQ-4  v0.12: file-locking on save (advisory flock) so a crashed prior
+      VoxKit instance doesn't leave the .voxkit half-written. Defer;
+      v1.0 hobby-scope acceptable, atomic-replace covers most of it.
 """
 
 from pathlib import Path
@@ -522,3 +563,102 @@ def test_T28_save_is_atomic_on_failure(tmp_path: Path, monkeypatch):
     assert out.read_bytes() == good_bytes
     s_loaded = load_session(out)
     assert s_loaded.bpm == 120.0
+
+
+# ---------------------------------------------------------------
+# v0.12 panel additions (principal-engineer synthesis)
+# ---------------------------------------------------------------
+
+def test_T29_migrator_exception_surfaces_with_step_context():
+    """v0.12: T18 tests a happy multi-step walk. A migrator that itself
+    raises (e.g., a v0.7 → v0.8 migrator that hits a corrupt field)
+    must surface the original exception PLUS context identifying which
+    step failed. Today: undefined; the user sees a bare KeyError with
+    no version anchor."""
+    from voxkit.core.migrations import walk_migrations, MigrationStepFailed
+
+    def boom(_d):
+        raise KeyError("missing_field")
+
+    table = {
+        ("0.4", "0.5"): lambda d: d,
+        ("0.5", "0.6"): boom,
+        ("0.6", "0.11"): lambda d: d,
+    }
+    with pytest.raises(MigrationStepFailed) as exc:
+        walk_migrations({}, from_version="0.4", to_version="0.11", table=table)
+    assert "0.5" in str(exc.value) and "0.6" in str(exc.value), (
+        "MigrationStepFailed must name the from/to of the failing step; "
+        f"got: {exc.value}"
+    )
+    # The original exception is preserved as the cause.
+    assert isinstance(exc.value.__cause__, KeyError)
+
+
+def test_T30_forward_compat_uses_semver_not_lexical_compare():
+    """v0.12: lexically '0.10' < '0.11' BUT also '0.10' < '0.9' — a
+    string-sort comparison would raise ForwardCompatVersionError on a
+    legitimate v0.9 LEGACY bundle. Pin semver-aware numeric compare
+    with explicit cases that distinguish the two."""
+    import json
+    import zipfile
+    from voxkit.core.session import load_session
+    from voxkit.core.manifest import ForwardCompatVersionError
+
+    def write_bundle(tmp_path, version):
+        out = tmp_path / f"v{version}.voxkit"
+        with zipfile.ZipFile(out, "w") as z:
+            z.writestr("manifest.json",
+                       json.dumps({"voxkit_format_version": version}))
+        return out
+
+    import tempfile
+    with tempfile.TemporaryDirectory() as td:
+        from pathlib import Path as _P
+        td_path = _P(td)
+
+        # Legacy bundle: must NOT raise ForwardCompatVersionError.
+        # (May raise other migration-related errors since v0.9 needs
+        # other fields, but NOT ForwardCompat.)
+        legacy = write_bundle(td_path, "0.9")
+        try:
+            load_session(legacy)
+        except ForwardCompatVersionError:
+            pytest.fail("0.9 lexically < 0.11 only by string sort; "
+                        "semver compare must classify it as legacy")
+        except Exception:
+            pass   # other migration errors are acceptable here
+
+        # Future bundle: MUST raise ForwardCompat.
+        future = write_bundle(td_path, "0.99")
+        with pytest.raises(ForwardCompatVersionError):
+            load_session(future)
+
+        # Tricky case: 0.100 (semver: > 0.99) must also raise.
+        tricky = write_bundle(td_path, "0.100")
+        with pytest.raises(ForwardCompatVersionError):
+            load_session(tricky)
+
+
+def test_T31_save_cleans_up_temp_files(tmp_path: Path):
+    """v0.12: an atomic-replace save typically writes to a sibling
+    temp file then renames. After a successful save, no .tmp / .partial
+    siblings should remain. Hobby users see lingering files and ask
+    'is my project corrupt?'."""
+    import numpy as np
+    from voxkit.core.session import save_session, Session, TimeSignature
+
+    s = Session(
+        bpm=120.0, time_signature=TimeSignature(4, 4), bars=4,
+        sample_rate=16_000, recording_sample_rate=48_000,
+        recording_audio_api="WASAPI",
+        audio=np.zeros(16_000, dtype=np.float32),
+    )
+    out = tmp_path / "session.voxkit"
+    save_session(s, out)
+
+    siblings = [p for p in tmp_path.iterdir() if p != out]
+    assert siblings == [], (
+        f"save left {len(siblings)} temp file(s) on disk: "
+        f"{[p.name for p in siblings]}"
+    )

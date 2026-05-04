@@ -102,11 +102,36 @@ Riley: 6/9)
        preceding meta event).
 
 ============================================================
-WEAK CONSENSUS / OPEN QUESTIONS
+v0.12 PANEL ADDITIONS (principal-engineer + Casey/Riley synthesis;
+those reviewers rate-limited)
+============================================================
+
+Discoverability of velocity-from-score risk (TIGHTEN — T30 anchors a
+docstring substring, which is brittle and not how Python signals
+deprecated/risky parameters)
+  T35  emit_velocity_from_score=True emits a runtime warning
+       (UserWarning) the FIRST time it's invoked per process. Pinning
+       the warning name (vs the docstring text) gives users a real
+       signal — IDEs, linters, and pytest -W all surface it. v0.12
+       also keeps T30's docstring check as a soft guarantee but T35
+       is the load-bearing one.
+
+Real-load smoke (STRONG — every existing round-trip test uses ≤ 4
+events; a 32-bar session with hundreds of events exercises the
+ticks-per-beat math and any per-event-list O(n²) bug)
+  T36  Round-trip a 32-bar session with ~256 events at 1/16 grid
+       preserves event count exactly. Today's tests don't exercise
+       the realistic-load path; an O(n²) bug or PPQ-overflow at high
+       event counts would ship undetected.
+
+============================================================
+WEAK CONSENSUS / OPEN QUESTIONS (carry from v0.11 + v0.12)
 ============================================================
 
 OQ-1  Logarithmic velocity option for v1.1 (above).
-OQ-2  Remove emit_velocity_from_score for v1.0?
+OQ-2  Remove emit_velocity_from_score for v1.0? v0.12 (Casey): T35
+      adds a warning-on-use which gives users a chance to opt out
+      without removing the parameter entirely. Defer hard removal.
 OQ-3  Export of unknown-class events at a configurable channel separate
       from channel 10 (so the user can route them to a different
       VST/sampler). [Jordan, Marco: 2/9 — defer to v1.1.]
@@ -635,3 +660,59 @@ def test_T34_round_trip_preserves_event_at_t_zero(tmp_path, default_taxonomy):
     assert len(rt) == 2
     assert rt[0].class_id == "kick"
     assert abs(rt[0].t) < 0.002
+
+
+# ---------------------------------------------------------------
+# v0.12 panel additions (principal-engineer + Casey/Riley synthesis)
+# ---------------------------------------------------------------
+
+def test_T35_emit_velocity_from_score_emits_runtime_warning(
+    tmp_path, default_taxonomy,
+):
+    """v0.12: T30 anchored a docstring substring — brittle and IDE-
+    invisible. Pinning a runtime UserWarning gives users (and pytest -W,
+    and IDEs, and linters) a real signal that classifier confidence
+    score is NOT a percussion velocity."""
+    import warnings
+    from voxkit.export.midi import export_midi
+    out = tmp_path / "warns.mid"
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        export_midi(
+            events=[_make_event(0.5, "kick", score=0.5)],
+            out_path=out, bpm=120, taxonomy=default_taxonomy,
+            emit_velocity_from_score=True,
+        )
+    relevant = [w for w in caught
+                if issubclass(w.category, UserWarning)
+                and "score" in str(w.message).lower()]
+    assert relevant, (
+        "emit_velocity_from_score=True must emit a UserWarning that "
+        "mentions 'score' so users have a discoverable signal that "
+        "classifier confidence is not a velocity proxy"
+    )
+
+
+def test_T36_round_trip_32_bar_session_with_many_events(
+    tmp_path, default_taxonomy,
+):
+    """v0.12: every existing round-trip test uses ≤ 4 events. A 32-bar
+    1/16 session has up to ~512 grid positions; exercise the realistic-
+    load path so an O(n²) bug in the exporter or PPQ-overflow at high
+    event counts is caught here, not in production."""
+    bpm = 120
+    bar_seconds = 4 * (60.0 / bpm)
+    n_bars = 32
+    n_events_per_bar = 8
+    events = []
+    for bar in range(n_bars):
+        for slot in range(n_events_per_bar):
+            t = bar * bar_seconds + slot * (bar_seconds / n_events_per_bar)
+            cls = ("kick", "snare", "closed_hat", "open_hat")[slot % 4]
+            events.append(_make_event(t, cls))
+
+    rt = _round_trip_events(events, bpm=bpm, taxonomy=default_taxonomy,
+                            tmp_path=tmp_path)
+    assert len(rt) == len(events), (
+        f"32-bar realistic load lost events: in={len(events)}, out={len(rt)}"
+    )

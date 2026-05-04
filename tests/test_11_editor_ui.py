@@ -120,7 +120,33 @@ InferenceWorker thread cleanup (Sam, Alex, Casey, Riley, Lin, Marco: 6/9)
        about non-daemon threads at exit.
 
 ============================================================
-WEAK CONSENSUS / OPEN QUESTIONS
+v0.12 PANEL ADDITIONS (principal-engineer + Sam synthesis;
+Sam-equivalent reviewer rate-limited)
+============================================================
+
+Test-foundation correctness (STRONG — every InferenceWorker test relies
+on wait_for_completion(timeout=5.0). If wait_for_completion is buggy
+or doesn't actually block, T01-T09 pass spuriously)
+  T48  wait_for_completion(timeout=0.001) returns False on a worker
+       that hasn't yet completed (i.e., the timeout actually times
+       out). Without this test, every existing InferenceWorker test's
+       wait_for_completion(timeout=5.0) is unverified.
+
+Lifecycle parity with Recorder (STRONG — Recorder T27 covers open-
+twice; InferenceWorker has no equivalent and starting a worker twice
+is a plausible mistake from a UI that forgot to disable the button)
+  T49  InferenceWorker.start() called twice without intervening
+       wait_for_completion raises WorkerAlreadyStarted. Mirror of
+       Recorder T27.
+
+Tightening of v0.11 panel additions
+  T47  TIGHTEN: replace name-prefix "Inference" matching with a real
+       reference to the worker's underlying thread (worker.thread or
+       similar). The string-prefix test fails silently if the thread
+       is named differently in subclasses.
+
+============================================================
+WEAK CONSENSUS / OPEN QUESTIONS (carry from v0.11 + v0.12)
 ============================================================
 
 OQ-1  Re-run inference from editor without re-record (spec §10 item 23,
@@ -133,6 +159,9 @@ OQ-3  Accessibility: keyboard navigation of lanes, screen-reader labels.
 OQ-4  T14 (pipeline does not import Qt) uses sys.modules manipulation
       that's brittle to test-runner state. Replace with subprocess
       isolation in v1.1. [Sam: 1/9 — defer.]
+OQ-5  v0.12: T43 (import editor in < 0.5s) is flaky on cold CI Python
+      with PySide/PyQt. Defer; downgrade to a soft assertion or move
+      to a manual benchmark.
 """
 
 from __future__ import annotations
@@ -704,3 +733,65 @@ def test_T47_worker_thread_cleaned_up_after_completion(fake_model, short_audio):
     leaked_alive = [t for t in (set(threading.enumerate()) - initial_threads)
                     if t.is_alive() and "Inference" in t.name]
     assert leaked_alive == [], f"worker thread(s) leaked: {[t.name for t in leaked_alive]}"
+
+
+# ---------------------------------------------------------------
+# v0.12 panel additions (principal-engineer + Sam synthesis)
+# ---------------------------------------------------------------
+
+def test_T48_wait_for_completion_actually_times_out(fake_model):
+    """v0.12: every existing InferenceWorker test relies on
+    wait_for_completion(timeout=5.0). If wait_for_completion is buggy
+    (e.g., always returns True without blocking) every test passes
+    spuriously. Invert the contract: a worker that's mid-inference
+    must NOT report completion at a 1ms timeout."""
+    import threading
+    import numpy as np
+    from voxkit.ui.inference_worker import InferenceWorker
+
+    long_audio = np.zeros(16_000 * 60, dtype=np.float32)   # 60s of audio
+    started = threading.Event()
+    block = threading.Event()
+
+    fake_model_copy = fake_model
+    original_predict = getattr(fake_model_copy, "predict", None)
+
+    def slow_predict(*_a, **_k):
+        started.set()
+        block.wait(timeout=2.0)
+        return []
+
+    fake_model_copy.predict = slow_predict
+    worker = InferenceWorker(audio=long_audio, model=fake_model_copy)
+    worker.start()
+    try:
+        # Wait for the worker to enter slow_predict so we know it's
+        # actually mid-flight when we test the timeout.
+        assert started.wait(timeout=2.0), "worker never entered predict()"
+
+        completed = worker.wait_for_completion(timeout=0.001)
+        assert completed is False, (
+            "wait_for_completion(timeout=0.001) returned True for a "
+            "worker that hadn't completed; the timeout is broken and "
+            "every other InferenceWorker test passes spuriously"
+        )
+    finally:
+        block.set()
+        worker.cancel()
+        worker.wait_for_completion(timeout=5.0)
+        if original_predict is not None:
+            fake_model_copy.predict = original_predict
+
+
+def test_T49_start_called_twice_raises(fake_model, short_audio):
+    """v0.12: Recorder T27 covers open-twice. InferenceWorker has no
+    equivalent and a UI that forgets to disable the start button is a
+    plausible source of double-start. Loud-fail."""
+    from voxkit.ui.inference_worker import InferenceWorker, WorkerAlreadyStarted
+    worker = InferenceWorker(audio=short_audio, model=fake_model)
+    worker.start()
+    try:
+        with pytest.raises(WorkerAlreadyStarted):
+            worker.start()
+    finally:
+        worker.wait_for_completion(timeout=5.0)

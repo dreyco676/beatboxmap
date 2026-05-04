@@ -1,0 +1,113 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# Synthetic-tier CI: runs on every push and PR.
+# - Linux + Windows test matrix (the two Phase 1.5 / Phase 1 targets).
+# - Python 3.11 and 3.12.
+# - Synthetic tier only: `pytest -m "not slow"` (TDD_README §running).
+# - Q77 import-linter contract check.
+# - Q82 reuse SPDX-header check.
+#
+# PR-validation tier (minimum-reproducible) and release tier (canonical)
+# run as separate workflows triggered manually or on tag, since they need
+# the dataset cache that's too large for every PR.
+
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # -------------------------------------------------------------
+  # Static checks: SPDX headers (Q82), import-linter contracts (Q77).
+  # Cheap, no native deps. Fail fast.
+  # -------------------------------------------------------------
+  static-checks:
+    name: SPDX + import-linter
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install static-check tooling
+        run: |
+          python -m pip install --upgrade pip
+          pip install reuse import-linter
+
+      - name: SPDX header check (Q82)
+        run: reuse lint
+
+      - name: Install package in editable mode (needed for import-linter)
+        # import-linter resolves modules by name; the package must be
+        # importable. We install with --no-deps to keep this job fast and
+        # independent of the heavy runtime deps.
+        run: pip install -e . --no-deps
+
+      - name: Import-linter contracts (Q77)
+        run: lint-imports
+
+  # -------------------------------------------------------------
+  # Synthetic-tier tests on Linux + Windows × Python 3.11 / 3.12.
+  # -------------------------------------------------------------
+  tests-synthetic:
+    name: synthetic tier (${{ matrix.os }} / py${{ matrix.python }})
+    needs: static-checks
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        python: ["3.11", "3.12"]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+          cache: pip
+
+      # PortAudio is needed for sounddevice on Linux (the recorder tests
+      # mock the device, but the import path must resolve).
+      - name: Install libportaudio (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libportaudio2
+
+      - name: Install package + dev extras
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .[dev,audio-linux]
+        if: runner.os == 'Linux'
+
+      - name: Install package + dev extras
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .[dev,audio-windows]
+        if: runner.os == 'Windows'
+
+      - name: Synthetic-tier pytest
+        # `--dataset=synthetic` is the default; spelled out for clarity.
+        # `-m "not slow"` matches the v0.11 spec §7.10 contract.
+        run: pytest -m "not slow" --dataset=synthetic --cov --cov-report=term-missing
+
+      - name: Upload coverage XML
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-${{ matrix.os }}-py${{ matrix.python }}
+          path: .coverage
+          if-no-files-found: ignore

@@ -1,0 +1,27 @@
+Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
+Upstream-Name: voxkit
+Upstream-Contact: VoxKit contributors
+Source: https://github.com/anthropics/voxkit
+
+# Q82: SPDX header enforcement is on every .py / .pyx / .toml source file.
+# Generated files, lockfiles, and dataset metadata that the project does
+# not author are exempted here.
+
+Files: README.md
+Copyright: VoxKit contributors
+License: GPL-3.0-or-later
+
+Files: VoxKit-spec-v0.11.md
+Copyright: VoxKit contributors
+License: GPL-3.0-or-later
+
+# Compiled / generated artifacts the project does not hand-author:
+Files: src/voxkit/_native/*.so src/voxkit/_native/*.pyd
+Copyright: VoxKit contributors
+License: GPL-3.0-or-later
+
+# Dataset metadata bundled with the synthetic tier (deterministic
+# generation; not separately copyrightable):
+Files: tests/data/synthetic/**
+Copyright: VoxKit contributors
+License: GPL-3.0-or-later

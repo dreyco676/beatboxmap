@@ -105,10 +105,33 @@ as OQ-2)
      linear scan. Bench under tracemalloc is overkill for v1.0; defer.
 
 ============================================================
-WEAK CONSENSUS / OPEN QUESTIONS
+v0.12 PANEL ADDITIONS (principal-engineer + Marco synthesis;
+Marco-equivalent reviewer rate-limited)
 ============================================================
 
-OQ-1  Triplet subdivisions (1/8t, 1/16t) for v1.0?
+User-facing error quality (STRONG — vocal percussion uses triplets;
+T11 rejecting "1/3" is correct for v1.0 but the error message must
+help the user, not just say "subdivision invalid")
+  T36  Unsupported subdivision error names the supported set. v0.11
+       T11 accepts any error message containing "subdivision"; v0.12
+       requires the message to enumerate the supported subdivisions
+       so a user trying "1/3" sees "1/3 not supported; try 1/4, 1/8,
+       1/16, or 1/32".
+
+Quantize integrity (STRONG — currently no test asserts that
+quantize_events doesn't lose or duplicate events)
+  T37  quantize_events preserves event count exactly. T20 covers
+       empty input; T21/T22 cover ordering and per-event fidelity but
+       neither pins count for the multi-event case. A buggy quantizer
+       that drops events on grid-overlap collisions would pass v0.11
+       and surface to the user as "missing notes after quantize".
+
+============================================================
+WEAK CONSENSUS / OPEN QUESTIONS (carry from v0.11 + v0.12)
+============================================================
+
+OQ-1  Triplet subdivisions (1/8t, 1/16t) for v1.0? v0.12 (Marco): if
+      deferred, T36 above ensures the user gets a helpful error.
 OQ-2  Quantize big-O complexity guard (deferred per above).
 OQ-3  Tempo curves / variable BPM (Q-future, defer to v1.1).
 """
@@ -466,3 +489,48 @@ def test_T35_quantize_events_with_empty_grid_raises():
     empty_grid = np.zeros(0)
     with pytest.raises(EmptyGrid):
         quantize_events(events, empty_grid, strength=1.0)
+
+
+# ---------------------------------------------------------------
+# v0.12 panel additions (principal-engineer + Marco synthesis)
+# ---------------------------------------------------------------
+
+def test_T36_unsupported_subdivision_error_lists_supported_set():
+    """v0.12 (Marco): vocal-percussion grooves often use 1/8 triplets;
+    v1.0 doesn't ship triplet support (OQ-1) but the user trying '1/3'
+    deserves an error message that names the supported set, not just
+    'subdivision invalid'. The match against 'supported' is loose to
+    let the implementer choose phrasing."""
+    from voxkit.tempo.grid import build_grid
+    with pytest.raises(ValueError) as exc:
+        build_grid(bpm=120, time_signature=(4, 4), bars=1, subdivision="1/3")
+    msg = str(exc.value)
+    # Must enumerate the supported subdivisions.
+    for known in ("1/4", "1/8", "1/16", "1/32"):
+        assert known in msg, (
+            f"unsupported-subdivision error must enumerate supported set; "
+            f"missing {known} in message: {msg!r}"
+        )
+
+
+def test_T37_quantize_events_preserves_event_count_exactly():
+    """v0.12: T20 covers empty input; T21/T22 cover ordering and per-
+    event fidelity. Nothing pins the count invariant for the multi-
+    event case. A buggy quantizer that drops events when two snap to
+    the same grid position (silent dedup) would surface as 'missing
+    notes after quantize' — wrong layer, wrong fix."""
+    from voxkit.tempo.grid import build_grid, quantize_events, Event
+    grid = build_grid(bpm=120, time_signature=(4, 4), bars=2, subdivision="1/16")
+    # Three events that will all snap to NEAR the same grid position
+    # (within 5 ms of grid[2]); a dedup bug would collapse to 1.
+    events = [
+        Event(t=grid[2] - 0.002, class_id="kick", score=0.9),
+        Event(t=grid[2] + 0.001, class_id="kick", score=0.85),
+        Event(t=grid[2] + 0.003, class_id="kick", score=0.8),
+        Event(t=grid[5], class_id="snare", score=0.7),
+    ]
+    out = quantize_events(events, grid, strength=1.0)
+    assert len(out) == len(events), (
+        f"quantize_events lost or duplicated events: "
+        f"in={len(events)}, out={len(out)}"
+    )

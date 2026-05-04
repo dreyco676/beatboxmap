@@ -101,7 +101,40 @@ Diagnostic durability (Riley, Dana, Alex, Sam, Casey, Jordan: 6/9)
        asserts both events are present in order.
 
 ============================================================
-WEAK CONSENSUS / OPEN QUESTIONS
+v0.12 PANEL ADDITIONS (principal-engineer + Casey/Riley/Marco synthesis;
+those reviewers rate-limited — synthesis only)
+============================================================
+
+User-facing failure modes (STRONG)
+  T34  Whole-session-silent commit rejected. v0.11 T30 covers ONE
+       silent sample; the more dangerous case is all 12 samples silent
+       (user flipped the wrong mic switch and didn't notice). The
+       commit() must surface AllSamplesSilent before the LR fit even
+       runs — the fit would either fail with a degenerate covariance
+       or produce garbage thresholds that Q71's overfit guard might
+       not catch.
+
+Diagnostic durability symmetry (STRONG — T32 only covers the rejection
+path; diagnostic failure on the SUCCESS path is a different code branch
+and a different blast radius)
+  T35  Successful commit + diagnostic-write failure: the calibration
+       still committed (classifier state advanced) AND the user's
+       calibration is not lost. Mirror of T32 but with the success
+       path; a different code branch with different blast radius.
+
+Removals / softening
+  T11  REWRITE: near-duplicate WARN at cosine > 0.999 will fire on
+       legitimately-similar consecutive samples (two crisp kicks from
+       the same person, captured back-to-back, ARE near-duplicates in
+       embedding space). v0.12 (Casey/Marco): downgrade from
+       UserWarning to a debug-log entry and a session-attribute count
+       the UI can choose to surface OR ignore. Test asserts the
+       behavior the team chooses; v0.12 picks "log only", T11 updated
+       accordingly. The user-facing warning is too noisy for the
+       intended audience.
+
+============================================================
+WEAK CONSENSUS / OPEN QUESTIONS (carry from v0.11 + v0.12)
 ============================================================
 
 OQ-1  Calibration sample audio (not just embedding) preserved on the
@@ -112,6 +145,10 @@ OQ-2  Cross-session calibration carry-over (load yesterday's calibration
       v0.10 design.]
 OQ-3  Diagnostic event PII review. [Dana: 2/9 — defer; events are
       numeric metrics + class IDs, not user content.]
+OQ-4  v0.12: snapshot/restore idempotency (calling restore() twice
+      doesn't double-restore). T29 verifies restore actually works
+      once; the idempotency case is plausible (UI double-fires the
+      cancel button) but low-impact. Defer.
 """
 
 from __future__ import annotations
@@ -237,18 +274,25 @@ def test_T10_wrong_dim_embedding_rejected():
         session.add_sample("kick", np.zeros(31))   # one short
 
 
-def test_T11_near_duplicate_sample_warns():
-    """A user holding the trigger may double-fire; the first sample is fine,
-    the second (cosine sim > 0.999) gets a warning but is still recorded."""
+def test_T11_near_duplicate_sample_logged_not_warned():
+    """v0.12 (Casey/Marco) REWRITTEN: the v0.11 form raised a UserWarning
+    on cosine > 0.999, which fires on legitimate consecutive samples
+    (two crisp kicks from the same person ARE near-duplicate embeddings).
+    The warning was too noisy for users doing the right thing.
+
+    v0.12 contract: the duplicate is silently accepted, but the session
+    increments a near_duplicate_count attribute the UI may choose to
+    surface in a single end-of-session summary (less disruptive than
+    a warning per sample)."""
     from voxkit.classifier.calibration_manager import CalibrationManager
     mgr = CalibrationManager(classifier=_make_classifier_stub())
     session = mgr.start_session()
     rng = np.random.default_rng(11)
     v = rng.standard_normal(32)
     session.add_sample("kick", v)
-    with pytest.warns(UserWarning, match="duplicate"):
-        session.add_sample("kick", v + 1e-6)
+    session.add_sample("kick", v + 1e-6)   # near-duplicate, no warning
     assert session.count_for("kick") == 2
+    assert session.near_duplicate_count == 1
 
 
 # ---------------------------------------------------------------
@@ -600,3 +644,59 @@ def test_T33_diagnostic_log_is_append_only_across_sessions(tmp_path: Path):
     assert len(lines) == 2
     assert json.loads(lines[0])["event"] == "first"
     assert json.loads(lines[1])["event"] == "second"
+
+
+# ---------------------------------------------------------------
+# v0.12 panel additions (principal-engineer + Casey/Marco synthesis)
+# ---------------------------------------------------------------
+
+def test_T34_all_silent_session_commit_rejected_before_fit():
+    """v0.12: T30 catches one silent SAMPLE; the more dangerous case is
+    every sample silent (user flipped the wrong mic switch and never
+    noticed). The fit either degenerates or produces garbage thresholds.
+    Reject the commit BEFORE fit so the user gets a clear error rather
+    than a 'classifier rejected' diagnostic that points at the wrong
+    layer."""
+    from voxkit.classifier.calibration_manager import (
+        CalibrationManager, AllSamplesSilent,
+    )
+    clf = _make_classifier_stub()
+    mgr = CalibrationManager(classifier=clf)
+    session = mgr.start_session()
+    # Fill with silent embeddings (zero vectors, plus the source-audio
+    # RMS attribute the v0.11 T30 contract uses).
+    for cls in session.classes:
+        for _ in range(session.required_per_class):
+            session.add_sample(cls, np.zeros(32, dtype=np.float32),
+                               source_audio_rms=1e-6,
+                               skip_silence_check=True)
+    with pytest.raises(AllSamplesSilent):
+        mgr.commit(session)
+    # Fit must NOT have been called — the fail-fast check is upstream.
+    assert not clf.fit_with_calibration.called
+
+
+def test_T35_diagnostic_failure_on_success_path_does_not_lose_calibration(
+    tmp_path, capsys,
+):
+    """v0.12: T32 covers diagnostic failure on the REJECTION path. The
+    success path is a different code branch — and arguably more
+    important: a user who just spent 2 minutes recording a working
+    calibration must NOT lose it because the diagnostic file is full.
+
+    Note this overlaps somewhat with T32 but exercises the
+    'calibration_committed' emit path specifically rather than the
+    'overfit_guard_triggered' emit path."""
+    from voxkit.classifier.calibration_manager import CalibrationManager
+    sink = MagicMock()
+    sink.emit.side_effect = OSError("disk full")
+    clf = _make_classifier_stub()
+    mgr = CalibrationManager(classifier=clf, telemetry=sink)
+    handle = mgr.commit(_completed_session(mgr))
+
+    assert handle is not None
+    assert handle.classifier is clf
+    # The fit DID run; the committed state is real.
+    assert clf.fit_with_calibration.called
+    err = capsys.readouterr().err
+    assert "diagnostic" in err.lower() or "telemetry" in err.lower()

@@ -1,0 +1,79 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# Q77 platform-isolation contracts. Enforced in CI on every PR via
+# `lint-imports`; violations block merge. test_02 T25 (and v0.12 T31)
+# verify the contracts ARE present even if the CI step is misconfigured.
+
+[importlinter]
+root_packages =
+    voxkit
+
+# ---------------------------------------------------------------
+# Contract 1: only voxkit.audio.recorder may import sounddevice or
+# any other platform audio library. Q77 (a).
+# ---------------------------------------------------------------
+[importlinter:contract:audio-isolation]
+name = Only voxkit.audio.recorder may import platform audio libraries
+type = forbidden
+source_modules =
+    voxkit.core
+    voxkit.classifier
+    voxkit.dsp
+    voxkit.eval
+    voxkit.export
+    voxkit.playback
+    voxkit.tempo
+    voxkit.telemetry
+    voxkit.ui
+forbidden_modules =
+    sounddevice
+    pyaudio
+    coreaudio
+    portaudio
+
+# ---------------------------------------------------------------
+# Contract 2: no module under voxkit.core / classifier / eval / ui
+# imports any platform-specific OS module by name. Q77 (b).
+# ---------------------------------------------------------------
+[importlinter:contract:no-os-platform-leak]
+name = No platform-specific OS module imported by core/classifier/eval/ui
+type = forbidden
+source_modules =
+    voxkit.core
+    voxkit.classifier
+    voxkit.eval
+    voxkit.ui
+forbidden_modules =
+    win32
+    win32api
+    win32con
+    pywin32
+    Foundation
+    AppKit
+    Quartz
+    fcntl
+
+# ---------------------------------------------------------------
+# Contract 3: voxkit.core may not depend on voxkit.ui. Q77 (c).
+# ---------------------------------------------------------------
+[importlinter:contract:core-not-on-ui]
+name = voxkit.core does not depend on voxkit.ui
+type = forbidden
+source_modules =
+    voxkit.core
+forbidden_modules =
+    voxkit.ui
+
+# ---------------------------------------------------------------
+# Contract 4: pure pipeline driver (Q76, test_11 T14) does not import Qt.
+# ---------------------------------------------------------------
+[importlinter:contract:pipeline-not-on-qt]
+name = voxkit.ui.inference_pipeline does not import Qt
+type = forbidden
+source_modules =
+    voxkit.ui.inference_pipeline
+forbidden_modules =
+    PyQt5
+    PyQt6
+    PySide2
+    PySide6

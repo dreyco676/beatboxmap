@@ -75,7 +75,45 @@ Memory & batch hygiene (Lin, Sam, Alex, Casey, Riley, Marco, Priya: 7/9)
        batch < 4 × (1000 × embedding_dim × 4 bytes). Marked @slow.
 
 ============================================================
-WEAK CONSENSUS / OPEN QUESTIONS
+v0.12 PANEL ADDITIONS (principal-engineer ML synthesis;
+Priya-equivalent reviewer rate-limited — synthesis only)
+============================================================
+
+Privacy / offline guarantee strengthening (STRONG)
+  T28  ONNX session is loaded with providers=["CPUExecutionProvider"]
+       EXPLICITLY (not just by accident of CPU-only environment). T23
+       checks the provider is set; T28 also asserts no GPU/CUDA
+       provider is in the providers list and that the session has no
+       implicit fallback to providers it didn't request.
+
+Dtype hygiene (STRONG — the no-allocation contract relies on dtype
+being float32 end-to-end; an upstream bug that delivers float64 would
+silently double the working set)
+  T29  extract() with a float64 window raises ValueError("dtype",
+       "float32") rather than silently downcasting. The downcast is
+       behaviorally correct but masks an upstream bug in the recorder
+       or resampler. Loud-fail.
+
+Onset-driven extraction edge (STRONG — onsets near the END of the
+buffer are the symmetric case to T20's near-START; if pad logic is
+asymmetric, tests miss the regression)
+  T30  Onset positioned at audio_length - 1 sample is zero-padded on
+       the RIGHT (post-pad) and produces a valid embedding, mirroring
+       T20's near-start case. Asymmetric pad logic is a real failure
+       mode in window-around helpers.
+
+Removals
+  T09  REMOVE: asserts ext.input_length % 16 == 0 — a multiple-of-16
+       check that any sample rate satisfies for round-millisecond
+       windows. Pins NO contract about 16 kHz; the comment claims
+       "contract enforced at recorder boundary" but the test doesn't
+       enforce that. v0.12: replace with a real assertion that the
+       extractor exposes its required sample_rate as a class-level
+       constant (or remove entirely; the recorder boundary IS where
+       this is tested).
+
+============================================================
+WEAK CONSENSUS / OPEN QUESTIONS (carry from v0.11 + v0.12)
 ============================================================
 
 OQ-1  PANNs vs BEATs equivalence sanity (cosine similarity floor on
@@ -86,6 +124,10 @@ OQ-2  INT8 quantized model handling. [Casey: 1/9 — defer; out of v1.0
 OQ-3  Window normalization (peak vs RMS): is the input expected to be
       pre-normalized? Implicit currently. [Lin: 1/9 — open question
       for week 2 implementation; not test-driven yet.]
+OQ-4  v0.11 T26 hardcodes BEATs input_length = 160000. If the canonical
+      BEATs config differs, T26 fails without revealing the truth.
+      v0.12 (synthesis): pull the number from a substrate-config
+      module, not from the test. Defer to a tidy commit.
 """
 
 from __future__ import annotations
@@ -195,16 +237,16 @@ def test_T08_vector_length_matches_embedding_dim(fake_onnx_path):
 # Pre-conditions
 # ---------------------------------------------------------------
 
-def test_T09_window_must_be_16khz_input(fake_onnx_path):
-    """The extractor's contract is 16 kHz audio; the resampler is
-    upstream. Submitting non-16k material is a programming error."""
+def test_T09_extractor_exposes_required_sample_rate(fake_onnx_path):
+    """v0.12 REWRITE: the v0.11 form asserted input_length % 16 == 0
+    which any sane window length satisfies — pinned no contract. The
+    extractor's contract IS 16 kHz; expose it as a class-level constant
+    so downstream code can assert against it rather than guess."""
     from voxkit.classifier.embeddings import EmbeddingExtractor
     with patch("voxkit.classifier.embeddings._load_onnx_session",
                return_value=_stub_session(2048)):
         ext = EmbeddingExtractor(onnx_path=fake_onnx_path, substrate_id="panns_cnn14")
-    # No sample_rate parameter: contract is enforced at the Recorder boundary.
-    # Test asserts that the input_length matches an integer number of 16k samples.
-    assert ext.input_length % 16 == 0   # multiple of 1ms at 16kHz
+    assert ext.required_sample_rate == 16_000
 
 
 def test_T10_wrong_window_length_raises(fake_onnx_path):
@@ -467,3 +509,59 @@ def test_T27_extract_batch_memory_bounded(fake_onnx_path):
         f"batch of 1000 grew RSS by {overhead / 1e6:.0f} MB; "
         f"output is only {output_bytes / 1e6:.0f} MB — possible buffering bug"
     )
+
+
+# ---------------------------------------------------------------
+# v0.12 panel additions (principal-engineer ML synthesis)
+# ---------------------------------------------------------------
+
+def test_T28_onnx_session_loaded_with_only_cpu_provider(fake_onnx_path):
+    """v0.12: T23 checks providers=['CPUExecutionProvider'] is passed,
+    but onnxruntime will silently use other providers if they're
+    available unless we ALSO assert the negative — no GPU/CUDA/DML
+    provider sneaks in. This is a privacy/offline-guarantee test, not
+    a perf test."""
+    from voxkit.classifier.embeddings import EmbeddingExtractor
+    with patch("voxkit.classifier.embeddings._load_onnx_session") as loader:
+        loader.return_value = _stub_session(2048)
+        EmbeddingExtractor(onnx_path=fake_onnx_path, substrate_id="panns_cnn14")
+        kwargs = loader.call_args.kwargs
+
+    providers = kwargs.get("providers")
+    assert providers == ["CPUExecutionProvider"]
+    forbidden = {"CUDAExecutionProvider", "TensorrtExecutionProvider",
+                 "DmlExecutionProvider", "ROCMExecutionProvider"}
+    assert not (set(providers) & forbidden), (
+        f"GPU/accelerator provider leaked into ONNX session: "
+        f"{set(providers) & forbidden}"
+    )
+
+
+def test_T29_extract_with_float64_window_loud_fails(fake_onnx_path):
+    """v0.12: a float64 window will silently work (numpy/onnxruntime
+    will downcast) but doubles the working-set memory and signals an
+    upstream bug in recorder/resampler. The no-allocation contract is
+    a downstream consequence of dtype hygiene."""
+    from voxkit.classifier.embeddings import EmbeddingExtractor
+    with patch("voxkit.classifier.embeddings._load_onnx_session",
+               return_value=_stub_session(2048)):
+        ext = EmbeddingExtractor(onnx_path=fake_onnx_path, substrate_id="panns_cnn14")
+        bad_window = np.zeros(ext.input_length, dtype=np.float64)
+        with pytest.raises(ValueError, match="float32"):
+            ext.extract(bad_window)
+
+
+def test_T30_onset_at_buffer_end_zero_padded_right(fake_onnx_path):
+    """v0.12: T20 covers near-START boundary (zero-pad on the LEFT).
+    The symmetric near-END case (zero-pad on the RIGHT) needs equal
+    coverage; an asymmetric pad implementation is a real failure mode
+    for window-around helpers."""
+    from voxkit.classifier.embeddings import EmbeddingExtractor
+    with patch("voxkit.classifier.embeddings._load_onnx_session",
+               return_value=_stub_session(2048)):
+        ext = EmbeddingExtractor(onnx_path=fake_onnx_path, substrate_id="panns_cnn14")
+        audio = np.zeros(16_000, dtype=np.float32)        # 1 second
+        last_sample_t = (len(audio) - 1) / 16_000
+        out = ext.extract_at_onsets(audio, onset_times_s=[last_sample_t],
+                                     sample_rate=16_000)
+    assert out.shape == (1, 2048)

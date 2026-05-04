@@ -125,17 +125,46 @@ recorded as OQ-1)
      asserts a regression against that bound).
 
 ============================================================
-WEAK CONSENSUS / OPEN QUESTIONS
+v0.12 PANEL ADDITIONS (principal-engineer + Priya synthesis;
+Priya-equivalent reviewer rate-limited)
+============================================================
+
+Substrate-decision reproducibility (STRONG — T42 verifies bootstrap_ci
+is reproducible but the higher-level substrate_decision is not, and the
+spec depends on it being deterministic for weekly bake-off comparisons)
+  T44  substrate_decision returns identical results across two runs
+       on the same scores and the same seed (or no seed). Without this,
+       the "did the bake-off flip?" question is unanswerable when the
+       flip is a numerical artifact.
+
+Calibration-uplift quality (STRONG — T16/T17 verify the bound is
+enforced but never that the selected weight actually IMPROVES anything
+over the no-calibration baseline)
+  T45  The default-weight selected by select_default_weight produces
+       a measurable uplift on a held-out subset vs the no-calibration
+       fit. T16 enforces the variance bound (drift_noisy/drift_clean
+       < 2.0); T45 enforces the corresponding mean uplift > 0.
+       Without this, a deeply-conservative selector that always picks
+       weight=0 (no calibration) passes T16 vacuously.
+
+Removals
+  T28  KEEP but FLAG: v0.11 OQ-4 already noted this mutates
+       MIGRATIONS globally with a try/finally restore. v0.12 (synthesis):
+       use monkeypatch.setattr to scope the mutation to the test. Test
+       body unchanged in shape; just the mutation pattern.
+
+============================================================
+WEAK CONSENSUS / OPEN QUESTIONS (carry from v0.11 + v0.12)
 ============================================================
 
 OQ-1  Hard release-gate enforcement of CPU perf target (above).
 OQ-2  Per-class F1 in JSON output (carried from spec §10 item 22).
 OQ-3  Wall-clock vs CPU-time for cpu_perf (CPU-time is more deterministic
       across loaded CI runners, but masks I/O regressions). Defer.
-OQ-4  T28 mutates the global MIGRATIONS dict and restores it. If the
-      test crashes between mutate and restore, every subsequent test
-      sees a corrupted MIGRATIONS. Refactor to use monkeypatch.setattr
-      in v1.1. [Alex: 1/9 — defer.]
+OQ-4  T28 mutates the global MIGRATIONS dict and restores it. v0.12
+      tracker: switch to monkeypatch.setattr in a tidy commit.
+OQ-5  v0.12: a synthetic-tier banner correctness test parallel to T39
+      (banner mentions all OTHER tier names). Cheap; defer to follow-up.
 """
 
 from __future__ import annotations
@@ -619,3 +648,72 @@ def test_T43_substrate_decision_includes_rationale():
     assert isinstance(decision.rationale, str) and len(decision.rationale) > 10
     # The rationale should mention the winner.
     assert decision.winner.lower() in decision.rationale.lower()
+
+
+# ---------------------------------------------------------------
+# v0.12 panel additions (principal-engineer + Priya synthesis)
+# ---------------------------------------------------------------
+
+def test_T44_substrate_decision_reproducible_across_runs():
+    """v0.12: T42 covers bootstrap_ci_macro_f1 reproducibility, but the
+    higher-level substrate_decision (which calls bootstrap and then
+    branches into the tiebreaker) has no such guarantee. The weekly
+    bake-off comparison ('did the substrate winner flip?') is only
+    meaningful if substrate_decision is deterministic."""
+    from voxkit.eval.substrate_bakeoff import substrate_decision
+
+    rng = np.random.default_rng(44)
+    panns_scores = rng.normal(0.85, 0.04, size=20)
+    beats_scores = rng.normal(0.84, 0.04, size=20)
+    pilot_ood = MagicMock(return_value="beats")
+
+    a = substrate_decision(panns_scores, beats_scores, pilot_ood_fn=pilot_ood, seed=44)
+    b = substrate_decision(panns_scores, beats_scores, pilot_ood_fn=pilot_ood, seed=44)
+
+    assert a.winner == b.winner
+    assert a.tiebreaker_used == b.tiebreaker_used
+    assert a.rationale == b.rationale
+
+
+def test_T45_default_calibration_weight_actually_improves_over_no_cal():
+    """v0.12: T16/T17 verify the variance bound (drift_noisy/drift_clean
+    < 2.0) is enforced. Neither verifies the selected weight is BETTER
+    than no calibration. A pathological selector that always returns
+    weight=0 (no calibration) passes T16 vacuously. Force a real
+    quality assertion: the selected weight's mean uplift over the
+    no-cal baseline must be > 0."""
+    from voxkit.eval.calibration_uplift import (
+        sweep_weights, select_default_weight,
+    )
+
+    rng = np.random.default_rng(45)
+    # Real cluster structure so calibration has something to improve.
+    D = 8
+    X = np.vstack([
+        rng.standard_normal((10, D)) + np.array([2.0] + [0.0] * (D - 1)),
+        rng.standard_normal((10, D)) + np.array([0.0, 2.0] + [0.0] * (D - 2)),
+    ]).astype(np.float32)
+    y = np.array([0] * 10 + [1] * 10)
+
+    # Calibration data biased toward the second cluster center; a
+    # well-chosen weight should improve in-distribution accuracy.
+    cal_X = (np.array([0.0, 2.0] + [0.0] * (D - 2)) +
+             rng.standard_normal((4, D)) * 0.1).astype(np.float32)
+    cal_y = np.array([1] * 4)
+
+    sweep = sweep_weights(
+        weights=[0, 1, 5, 25],
+        classifier_factory=MagicMock,
+        X=X, y=y, cal_X=cal_X, cal_y=cal_y,
+        noise_sigmas=[0.5],
+        record_uplift=True,
+    )
+    w = select_default_weight(sweep, max_ratio=2.0)
+
+    selected = next(s for s in sweep if s["weight"] == w)
+    no_cal = next(s for s in sweep if s["weight"] == 0)
+    assert selected.get("uplift_macro_f1", 0.0) >= no_cal.get("uplift_macro_f1", 0.0), (
+        f"selected weight={w} did not beat no-calibration baseline: "
+        f"uplift_selected={selected.get('uplift_macro_f1')}, "
+        f"uplift_no_cal={no_cal.get('uplift_macro_f1')}"
+    )

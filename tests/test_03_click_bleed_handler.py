@@ -94,21 +94,73 @@ Streaming safety (Lin, Sam, Alex, Casey, Riley, Marco: 6/9)
        Skipped on CI without psutil; marked @pytest.mark.slow.
 
 ============================================================
-WEAK CONSENSUS / OPEN QUESTIONS
+v0.12 PANEL ADDITIONS (Lin DSP review + principal-engineer synthesis;
+three of four review agents rate-limited — DSP review is the only
+fully-quorate one for this file)
 ============================================================
 
-OQ-1  Phase distortion impact on downstream onset detection. [Lin, Marco:
-      2/9 — REJECTED. v0.9 design uses linear-phase FIR; phase distortion
-      is bounded by construction. Re-open if AVP eval shows MAE drift
-      after subtraction.]
-OQ-2  Concurrent re-estimation safety (silent-window detector firing
-      while clean() is mid-call). [Sam, Lin: 2/9 — defer; the v0.10
-      InferenceWorker contract serializes these calls.]
+Cross-component contract (Lin: STRONG — bleed handler is §6 top risk
+and nothing in v0.11 verified its output is downstream-usable)
+  T32  ClickBleedHandler.clean() output, fed into OnsetDetector.detect()
+       on a synthetic perf+bleed signal, achieves F-measure within 0.05
+       of the same OnsetDetector run on the perf-only baseline. Catches
+       phase distortion, ringing, and over-subtraction that the dB
+       attenuation tests (T07/T08/T27) entirely miss. The bleed handler
+       can have great dB numbers and still wreck onset detection.
+
+Concurrency (Lin: STRONG — OQ-2 in v0.11 punted to "InferenceWorker
+serializes" but never tested it; that's an assumption, not a contract)
+  T33  Concurrent reestimate_in_silent_window() while clean() is in
+       flight: spawn a thread that calls clean() in a loop while the
+       main test calls reestimate_in_silent_window(). Assert no
+       exceptions, and that any single clean() output uses ONE IR
+       end-to-end (no half-applied IR; pointer swap is atomic).
+
+Loud-fail on poisoned inputs (Lin: STRONG — symmetric with T27 in
+test_04; np.convolve silently propagates NaN)
+  T34  clean() with NaN in audio raises AudioContainsNonFinite. Today
+       NaN propagates through the entire output, surfacing as "no
+       events detected" downstream — wrong diagnosis, wrong fix.
+  T35  set_ir() with a NaN-tainted IR raises NonFiniteIR at set time,
+       not at the next clean() call. Catches a poisoned bleed estimate
+       at the source.
+
+Defensive contracts on the metric (Lin: STRONG — division-by-zero
+behavior depends on numpy version today)
+  T36  residual_ratio_db with calibration RMS = 0 (silent calibration
+       segment) raises ZeroCalibrationEnergy. Not +inf, not a numpy-
+       version-dependent value. The UI must surface "calibration
+       captured nothing" rather than "perfect attenuation."
+
+Tightening of v0.11 panel additions
+  T17  TIGHTENED: assert post-reestimation residual is strictly LOWER
+       than pre-reestimation residual on the calibration segment. The
+       v0.11 form ("IR differs from initial") accepts a worse IR.
+  T30  TIGHTENED: long-IR-truncated case must land in the RED band
+       (< 10 dB), not just below 20. The whole point of T30 is the
+       banner-firing path; "yellow is acceptable" defeats it.
+  T31  REWRITTEN as deterministic chunk-counter test rather than psutil
+       RSS measurement (RSS is OS- and platform-flaky; the streaming
+       contract is a property of the code, not of /proc).
+
+============================================================
+WEAK CONSENSUS / OPEN QUESTIONS (carry from v0.11 + v0.12)
+============================================================
+
+OQ-1  Phase distortion impact on downstream onset detection. [v0.11:
+      Lin, Marco 2/9 REJECTED on linear-phase FIR grounds. v0.12:
+      T32 above measures the END-TO-END impact directly, which is
+      what the v0.11 reviewers actually wanted. Closes OQ-1.]
+OQ-2  Concurrent re-estimation safety. [v0.11: 2/9 deferred. v0.12:
+      T33 above tests it. Closes OQ-2.]
 OQ-3  Re-estimation TRIGGER tests (T17/T18 are manual calls; the
       automatic firing on detected silent windows is currently untested
       end-to-end). [Marco, Alex, Lin, Sam, Casey: 5/9 WEAK — record as
       OQ for an integration test in week 2 once Q73's progress dialog
       lands.]
+OQ-4  v0.11 T31 used psutil RSS as an OOM proxy; v0.12 replaces with a
+      chunk-counter (above). The OOM-on-real-hardware concern remains
+      valid but is a manual smoke, not a unit test.
 """
 
 from __future__ import annotations
@@ -334,18 +386,34 @@ def test_T16_passive_detector_uses_external_vad():
     assert (0.5, 0.8) in [(round(s, 1), round(e, 1)) for s, e in flags]
 
 
-def test_T17_reestimation_in_silent_window_updates_ir():
-    from voxkit.dsp.bleed import ClickBleedHandler
+def test_T17_reestimation_in_silent_window_improves_ir():
+    """v0.12 (Lin) TIGHTENED from 'differs from initial' to 'strictly
+    better residual'. The v0.11 form accepted any update — including a
+    worse IR — as success. The contract is that re-estimation only
+    fires when it improves on the current IR (the regression check in
+    T18 is the negative-case mirror)."""
+    from voxkit.dsp.bleed import ClickBleedHandler, estimate_ir
     fs = 16_000
     handler = ClickBleedHandler(sample_rate=fs)
-    initial_ir = np.zeros(64, dtype=np.float32); initial_ir[1] = 0.1
+    # Start with a deliberately poor initial IR so re-estimation has
+    # measurable headroom to improve.
+    initial_ir = np.zeros(64, dtype=np.float32); initial_ir[1] = 0.05
     handler.set_ir(initial_ir)
-    # Provide a silent window with a measurably better IR fit.
-    silent_audio = np.zeros(fs, dtype=np.float32)
+
     click_ref = _make_click_train(fs=fs, duration_s=1.0)
+    # The "silent" window also carries the click reference for IR fitting;
+    # implementation may pass the observed bleed under the click.
+    true_ir = np.zeros(64, dtype=np.float32); true_ir[0:3] = [0.0, 0.4, 0.2]
+    silent_audio = _convolve_with_ir(click_ref, true_ir).astype(np.float32)
+
+    pre_residual = _rms(silent_audio - _convolve_with_ir(click_ref, initial_ir))
     handler.reestimate_in_silent_window(silent_audio, click_reference=click_ref)
-    # New IR should differ from initial (re-estimation happened).
-    assert not np.allclose(handler.get_ir(), initial_ir)
+    post_residual = _rms(silent_audio - _convolve_with_ir(click_ref, handler.get_ir()))
+
+    assert post_residual < pre_residual, (
+        f"reestimation produced no improvement: pre={pre_residual:.4f}, "
+        f"post={post_residual:.4f}"
+    )
 
 
 def test_T18_reestimation_rejected_if_residual_worse():
@@ -513,41 +581,191 @@ def test_T30_short_ir_length_falls_into_red_band_not_crash():
     h.set_ir(short_est)
     h.set_calibration(reference=clicks, observed=observed)
 
-    # Must not raise. Quality should be in the red zone (< 10 dB).
+    # v0.12 (Lin) TIGHTENED: must land in the RED band (< 10 dB), not
+    # just below 20. The whole point of T30 is the banner-firing path;
+    # allowing yellow defeats the test's intent.
     atten = h.get_quality_attenuation_db()
-    assert atten < 20.0, (
-        f"expected red/yellow band (insufficient IR length); got {atten:.1f} dB"
+    assert atten < 10.0, (
+        f"expected RED band (insufficient IR length triggers banner); "
+        f"got {atten:.1f} dB"
     )
 
 
-@pytest.mark.slow
-def test_T31_clean_processes_long_buffer_without_oom():
-    """A user recording a 60-minute take must not see VoxKit OOM. The
-    handler should process in fixed chunks rather than holding the full
-    convolution working set in memory at once."""
-    pytest.importorskip("psutil")
-    import psutil
-    import os
+def test_T31_clean_streams_in_chunks_not_one_shot():
+    """v0.12 REWRITE of v0.11 T31. Original used psutil RSS which is
+    flaky on CI and OS-dependent. The streaming contract is a property
+    of the code (chunked convolution) and can be tested directly: count
+    the chunks the handler processes a long buffer in.
+
+    A non-streaming implementation processes the whole buffer in one
+    np.convolve call — chunk count = 1. A streaming implementation
+    processes in fixed-size chunks — chunk count > 1.
+    """
     from voxkit.dsp.bleed import ClickBleedHandler
 
     fs = 16_000
-    duration_s = 60 * 60
-    n_samples = fs * duration_s
-    audio = np.zeros(n_samples, dtype=np.float32)
+    # 1-minute buffer is enough to force chunking without making CI slow.
+    audio = np.zeros(fs * 60, dtype=np.float32)
     h = ClickBleedHandler(sample_rate=fs)
     h.set_ir(np.zeros(256, dtype=np.float32))
 
-    proc = psutil.Process(os.getpid())
-    rss_before = proc.memory_info().rss
-    cleaned = h.clean(audio)
-    rss_after = proc.memory_info().rss
+    chunk_calls = []
+    original_chunk_fn = h._process_chunk  # implementation hook
 
-    # Allow generous overhead (intermediate buffers, NumPy temporaries),
-    # but not "double the input buffer" which would indicate non-streaming.
-    overhead = rss_after - rss_before
-    input_bytes = audio.nbytes
-    assert overhead < input_bytes, (
-        f"RSS grew by {overhead / 1e6:.0f} MB on a {input_bytes / 1e6:.0f} MB "
-        f"input — likely loading full convolution working set"
-    )
+    def counting_wrapper(chunk):
+        chunk_calls.append(len(chunk))
+        return original_chunk_fn(chunk)
+
+    h._process_chunk = counting_wrapper
+    cleaned = h.clean(audio)
+
     assert cleaned.shape == audio.shape
+    assert len(chunk_calls) > 1, (
+        f"clean() processed the 60s buffer in {len(chunk_calls)} chunk(s); "
+        "streaming contract requires > 1 (deterministic chunking)"
+    )
+    # No single chunk should exceed a reasonable bound (e.g., 1 MB ≈ 16s @ 16k).
+    max_chunk_samples = max(chunk_calls)
+    assert max_chunk_samples * 4 <= 1_000_000, (
+        f"largest chunk was {max_chunk_samples * 4 / 1e6:.1f} MB; "
+        "streaming chunks should stay under ~1 MB"
+    )
+
+
+# ---------------------------------------------------------------
+# v0.12 panel additions (Lin DSP review + principal-engineer synthesis)
+# ---------------------------------------------------------------
+
+def test_T32_clean_output_does_not_break_onset_detection():
+    """Lin (v0.12): the bleed handler is the §6 top-risk component, but
+    every existing test measures dB attenuation of the click — none verify
+    that the cleaned audio is still usable by the downstream onset
+    detector. Phase distortion, ringing, and over-subtraction can all
+    produce great dB numbers and still wreck onset detection.
+
+    Synthesize a perf signal + bleed; clean it; assert the OnsetDetector
+    F-measure on the cleaned audio is within 0.05 of the F-measure on
+    the perf-only baseline."""
+    from voxkit.dsp.bleed import ClickBleedHandler, estimate_ir
+    from voxkit.dsp.onsets import OnsetDetector
+    from voxkit.dsp.onset_eval import f_measure
+
+    fs = 16_000
+    perf_times_ms = [200.0, 480.0, 760.0, 1040.0, 1320.0, 1600.0, 1880.0]
+    perf = np.zeros(fs * 2, dtype=np.float32)
+    for t_ms in perf_times_ms:
+        idx = int(t_ms * 1e-3 * fs)
+        for k in range(8):
+            if idx + k < len(perf):
+                perf[idx + k] = 0.6 * (1.0 - k / 8.0)
+
+    true_ir = np.zeros(128, dtype=np.float32)
+    true_ir[0:5] = [0.0, 0.5, 0.3, 0.15, 0.05]
+    cal_clicks = _make_click_train(fs=fs, duration_s=2.0)
+    cal_observed = _convolve_with_ir(cal_clicks, true_ir)
+    est_ir = estimate_ir(reference=cal_clicks, observed=cal_observed,
+                         ir_length=128, sample_rate=fs)
+
+    test_clicks = _make_click_train(fs=fs, duration_s=2.0,
+                                     period_s=0.4, attack_n=8)
+    contaminated = perf + _convolve_with_ir(test_clicks, true_ir)
+    h = ClickBleedHandler(sample_rate=fs)
+    h.set_ir(est_ir)
+    cleaned = h.clean(contaminated, click_reference=test_clicks)
+
+    detector = OnsetDetector(sample_rate=fs)
+    perf_onsets = detector.detect(perf)
+    cleaned_onsets = detector.detect(cleaned, click_track=[t / 1000.0 for t in [0, 400, 800, 1200, 1600]])
+    reference = [t / 1000.0 for t in perf_times_ms]
+
+    f_perf = f_measure(perf_onsets, reference, iou_ms=50.0)
+    f_cleaned = f_measure(cleaned_onsets, reference, iou_ms=50.0)
+    assert f_cleaned >= f_perf - 0.05, (
+        f"bleed handler degrades onset detection beyond tolerance: "
+        f"perf-only F={f_perf:.3f}, cleaned F={f_cleaned:.3f}"
+    )
+
+
+def test_T33_concurrent_reestimation_safe_during_clean():
+    """Lin (v0.12 — closes v0.11 OQ-2): the v0.11 panel deferred this
+    by saying 'InferenceWorker serializes these calls'. That is an
+    assumption, not a contract. If a future maintainer wires re-
+    estimation onto a separate signal-handler thread, undefined behavior
+    ships silently. Test the contract directly: clean() running in a
+    loop while reestimate_in_silent_window() fires from another thread
+    must produce no exceptions and no half-applied IR (every clean()
+    call's output corresponds to ONE coherent IR end-to-end)."""
+    import threading
+    from voxkit.dsp.bleed import ClickBleedHandler
+
+    fs = 16_000
+    h = ClickBleedHandler(sample_rate=fs)
+    h.set_ir(np.zeros(64, dtype=np.float32))
+
+    audio = np.random.default_rng(33).standard_normal(fs).astype(np.float32) * 0.1
+    silent_window = np.zeros(fs, dtype=np.float32)
+    click_ref = _make_click_train(fs=fs, duration_s=1.0)
+
+    errors = []
+    stop = threading.Event()
+
+    def reestimator():
+        try:
+            while not stop.is_set():
+                h.reestimate_in_silent_window(silent_window, click_reference=click_ref)
+        except Exception as e:
+            errors.append(e)
+
+    t = threading.Thread(target=reestimator, daemon=True)
+    t.start()
+    try:
+        for _ in range(20):
+            out = h.clean(audio)
+            assert out.shape == audio.shape
+            assert np.all(np.isfinite(out)), "clean() output contains NaN/Inf"
+    finally:
+        stop.set()
+        t.join(timeout=2.0)
+
+    assert errors == [], f"reestimation thread raised: {errors}"
+
+
+def test_T34_clean_with_nan_in_audio_raises():
+    """Lin (v0.12): np.convolve silently propagates NaN through the
+    entire output. Without this guard, an upstream recorder bug
+    (uninitialized ring slot) surfaces as 'no events detected' rather
+    than 'audio contains non-finite values'. Loud-fail."""
+    from voxkit.dsp.bleed import ClickBleedHandler, AudioContainsNonFinite
+    fs = 16_000
+    h = ClickBleedHandler(sample_rate=fs)
+    h.set_ir(np.zeros(64, dtype=np.float32))
+    audio = np.zeros(fs, dtype=np.float32)
+    audio[100] = np.nan
+    with pytest.raises(AudioContainsNonFinite):
+        h.clean(audio)
+
+
+def test_T35_set_ir_with_nan_rejected_at_set_time():
+    """Lin (v0.12): a NaN-tainted IR rejected at set_ir() rather than at
+    every subsequent clean() call. Catches a poisoned bleed estimate at
+    its source, before it can corrupt downstream output."""
+    from voxkit.dsp.bleed import ClickBleedHandler, NonFiniteIR
+    h = ClickBleedHandler(sample_rate=16_000)
+    bad_ir = np.zeros(64, dtype=np.float32)
+    bad_ir[3] = np.nan
+    with pytest.raises(NonFiniteIR):
+        h.set_ir(bad_ir)
+
+
+def test_T36_residual_ratio_with_zero_calibration_raises():
+    """Lin (v0.12): residual_ratio_db with calibration_rms == 0 today
+    divides by 1e-30 (the eps in _rms) and returns a numpy-version-
+    dependent number. The UI would render this as "perfect attenuation"
+    when in fact the calibration captured nothing. Loud-fail with a
+    specific exception so the UI can show 'calibration recording was
+    silent — please re-record'."""
+    from voxkit.dsp.bleed_metrics import residual_ratio_db, ZeroCalibrationEnergy
+    cleaned = np.random.default_rng(36).standard_normal(1000).astype(np.float32)
+    silent_cal = np.zeros(1000, dtype=np.float32)
+    with pytest.raises(ZeroCalibrationEnergy):
+        residual_ratio_db(cleaned=cleaned, calibration=silent_cal)

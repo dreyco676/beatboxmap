@@ -87,15 +87,57 @@ Robustness (Marco, Lin, Alex, Casey, Sam, Riley: 6/9)
        recorder bug as a "no events detected" UX state).
 
 ============================================================
-WEAK CONSENSUS / OPEN QUESTIONS
+v0.12 PANEL ADDITIONS (Lin DSP review + principal-engineer synthesis;
+three of four review agents rate-limited)
+============================================================
+
+Realistic-input robustness (Lin: STRONG — both failure modes are
+plausible in a hobby user's first session and currently unverified)
+  T28  DC-offset robustness: a poorly-coupled mic adds a constant bias
+       (e.g., +0.3) to the entire signal. Detector F-measure must stay
+       within 0.02 of the no-bias baseline. Today: untested; spectral-
+       flux detectors are usually fine but a buggy normalization step
+       can break this.
+  T29  Mid-stream dropout robustness: splice 30 ms of zeros into the
+       middle of a perf signal (simulates a recorder buffer drop). The
+       detector must NOT generate spurious onsets at the dropout
+       boundaries (the discontinuity edge is a strong onset signature
+       for naive flux detectors).
+
+Removals (Lin: REMOVE)
+  T25  REMOVE: hasattr(onset_eval, "alignment_median_ae") is a name
+       check, not a behavior check. T16 already pins the median
+       behavior. The rename, if it happens, is documentation work; the
+       test contributes nothing once the alias exists. Replaced with
+       a direct assertion in T16.
+  T26  REMOVE: branches on ONSET_MIN_SEPARATION_MS and asserts whichever
+       behavior matches the constant. Tests itself by construction; pins
+       no contract. Either pick a behavior in the spec OR delete. v0.12
+       deletes; if the close-onsets behavior matters, write a real test
+       against a chosen contract.
+
+Tightening of v0.11 panel additions
+  T27  TIGHTENED: also test +inf and -inf, not just NaN. The contract
+       is "non-finite", and inf has different propagation behavior than
+       NaN through some librosa code paths.
+
+============================================================
+WEAK CONSENSUS / OPEN QUESTIONS (carry from v0.11 + v0.12)
 ============================================================
 
 OQ-1  Tongue-click handling (Lin's defer note from §8). Recorded; pursue
       if AVP eval shows tongue-click subjects underperforming.
-OQ-2  Adaptive threshold under sustained loud input. [Lin: 1/9 — defer.
-      librosa.onset has its own adaptation; not our layer.]
+OQ-2  Adaptive threshold under sustained loud input. [v0.11: Lin 1/9
+      defer. v0.12: Lin softened — vocal percussion has dynamic-range
+      issues that the librosa adaptation doesn't fully cover; revisit
+      if the AVP-tier test (T23) flags subjects with sustained-loud
+      problems.]
 OQ-3  Detector latency contract (windowed lookahead). Q70 metrics are
       offline; latency only matters if/when live preview is built.
+OQ-4  Release-gate thresholds (T18-T21) are scattered as magic numbers
+      across four tests. v0.12 (Lin WEAK): consolidate into a single
+      RELEASE_GATE_THRESHOLDS dict in the module under test; tests
+      assert against that dict. Defer to a follow-up tidy commit.
 """
 
 from __future__ import annotations
@@ -378,46 +420,87 @@ def test_T24_f_measure_penalizes_false_positives():
     assert f < 0.20, f"FP-heavy detector scored F={f:.3f}; expected < 0.20"
 
 
-def test_T25_mae_function_name_matches_statistic_used():
-    """Q70 robustness: the spec wants robust-to-outliers alignment, which
-    points to median. T16 in this file already asserts median behavior
-    (3 errors of 10ms + 1 outlier of 100ms → 10, not 32.5). The function
-    name 'alignment_mae' (Mean Absolute Error) is therefore misleading.
+# T25 (v0.11) REMOVED in v0.12 (Lin): hasattr() name check is theater.
+# T16 already pins the median behavior; the rename is documentation
+# work, not a behavioral contract. If you're hunting for the v0.11 T25,
+# the docstring discussion in T16 is the actual deliverable.
 
-    This test asserts the rename to 'alignment_median_ae' has happened;
-    if the implementer chose to keep the MAE name and switch to mean,
-    update T16 instead and remove this test.
+
+# T26 (v0.11) REMOVED in v0.12 (Lin): the test branched on
+# ONSET_MIN_SEPARATION_MS and asserted whichever behavior matched the
+# constant — true by construction, pins no contract. If close-onsets
+# behavior needs a test, write one against a CHOSEN contract (snap-merge
+# at 5 ms, two-event below 5 ms, etc.) rather than reading the constant.
+
+
+def test_T27_non_finite_audio_raises_clearly():
+    """A non-finite audio buffer often comes from an upstream recorder
+    bug (uninitialized ring slot, divide-by-zero in normalization). A
+    silently-empty onset list would surface to the user as 'no events
+    detected' — wrong diagnosis, wrong fix. Loud-fail.
+
+    v0.12 (Lin) TIGHTENED: also test +inf and -inf. inf has different
+    propagation through some librosa code paths than NaN; both must be
+    rejected as 'non-finite'.
     """
-    from voxkit.dsp import onset_eval
-    assert hasattr(onset_eval, "alignment_median_ae"), (
-        "Q70 robustness implies median (per T16); function should be "
-        "named alignment_median_ae for honesty. Keep alignment_mae as a "
-        "deprecated alias if needed."
+    from voxkit.dsp.onsets import OnsetDetector, AudioContainsNonFinite
+    fs = 16_000
+    base = _impulse_signal(fs, 1.0, [200.0, 500.0])
+
+    for poison_value in (np.nan, np.inf, -np.inf):
+        sig = base.copy()
+        sig[1000] = poison_value
+        with pytest.raises(AudioContainsNonFinite):
+            OnsetDetector(sample_rate=fs).detect(sig)
+
+
+# ---------------------------------------------------------------
+# v0.12 panel additions (Lin DSP review + principal-engineer synthesis)
+# ---------------------------------------------------------------
+
+def test_T28_detector_robust_to_dc_offset():
+    """v0.12 (Lin): a poorly-coupled mic adds a constant bias to the
+    signal (DC offset). A well-implemented spectral-flux detector is
+    immune; a buggy normalization step is not. Catches a regression
+    where the detector starts treating the DC step as an onset."""
+    from voxkit.dsp.onsets import OnsetDetector
+    from voxkit.dsp.onset_eval import f_measure
+    fs = 16_000
+    impulses_ms = [100.0, 350.0, 600.0, 875.0]
+    sig = _impulse_signal(fs, 1.0, impulses_ms)
+    detector = OnsetDetector(sample_rate=fs)
+
+    f_clean = f_measure(detector.detect(sig),
+                        [t / 1000.0 for t in impulses_ms], iou_ms=50.0)
+    f_biased = f_measure(detector.detect(sig + 0.3),
+                         [t / 1000.0 for t in impulses_ms], iou_ms=50.0)
+    assert f_biased >= f_clean - 0.02, (
+        f"DC offset degraded F-measure beyond tolerance: "
+        f"clean={f_clean:.3f}, +0.3 bias={f_biased:.3f}"
     )
 
 
-def test_T26_close_onsets_documented_behavior():
-    """Two impulses 4 ms apart: detector either merges (returns 1) or
-    keeps both (returns 2). Spec must document the choice; test pins
-    whichever the implementer chose so it doesn't silently flip."""
-    from voxkit.dsp.onsets import OnsetDetector, ONSET_MIN_SEPARATION_MS
+def test_T29_detector_robust_to_short_dropout():
+    """v0.12 (Lin): a recorder buffer drop produces a 30 ms zero gap
+    spliced into the audio stream. The discontinuity edges are a strong
+    onset signature for a naive flux detector — and would surface to
+    the user as 'two extra onsets near the dropout' (wrong place, wrong
+    interpretation). The detector must not fire on the dropout boundary."""
+    from voxkit.dsp.onsets import OnsetDetector
     fs = 16_000
-    sig = _impulse_signal(fs, 0.5, [200.0, 204.0])   # 4 ms apart
-    onsets = OnsetDetector(sample_rate=fs).detect(sig)
-    if ONSET_MIN_SEPARATION_MS >= 5:
-        assert len(onsets) == 1, "with min separation >= 5 ms, expect merge"
-    else:
-        assert len(onsets) == 2, "with min separation < 5 ms, expect both"
+    real_impulses_ms = [100.0, 800.0]   # well clear of the dropout
+    sig = _impulse_signal(fs, 1.0, real_impulses_ms)
 
+    # Splice 30 ms of zeros at 400-430 ms.
+    drop_start = int(0.400 * fs)
+    drop_end = int(0.430 * fs)
+    sig[drop_start:drop_end] = 0.0
 
-def test_T27_nan_in_audio_raises_clearly():
-    """A NaN-contaminated audio buffer often comes from an upstream
-    recorder bug (uninitialized ring slot). A silently-empty onset list
-    would surface to the user as 'no events detected' — wrong diagnosis,
-    wrong fix. Loud-fail."""
-    from voxkit.dsp.onsets import OnsetDetector, AudioContainsNonFinite
-    fs = 16_000
-    sig = _impulse_signal(fs, 1.0, [200.0, 500.0])
-    sig[1000] = np.nan
-    with pytest.raises(AudioContainsNonFinite):
-        OnsetDetector(sample_rate=fs).detect(sig)
+    onsets_s = OnsetDetector(sample_rate=fs).detect(sig)
+    onsets_ms = [t * 1000.0 for t in onsets_s]
+    spurious = [t for t in onsets_ms
+                if 400.0 - 20 < t < 430.0 + 20
+                and not any(abs(t - r) < 10 for r in real_impulses_ms)]
+    assert spurious == [], (
+        f"detector fired spurious onsets at dropout boundary: {spurious}"
+    )

@@ -1,0 +1,14 @@
+PLACEHOLDER: this file must be replaced with the canonical GNU GPL v3
+license text before `reuse lint` will pass and before any release.
+
+Fetch with:
+
+    curl -L https://www.gnu.org/licenses/gpl-3.0.txt -o LICENSES/GPL-3.0-or-later.txt
+
+Or use the reuse tool, which has the SPDX license registry bundled:
+
+    reuse download GPL-3.0-or-later
+
+The placeholder exists so that the directory is committed and the
+intended location is documented. The repository ships GPL-3.0-or-later
+regardless of whether this file has been hydrated locally.

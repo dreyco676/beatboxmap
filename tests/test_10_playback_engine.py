@@ -97,15 +97,59 @@ OQ-2)
      indicator. Implementer's choice whether to expose; defer.
 
 ============================================================
-WEAK CONSENSUS / OPEN QUESTIONS
+v0.12 PANEL ADDITIONS (Lin DSP review + principal-engineer synthesis;
+three of four review agents rate-limited)
+============================================================
+
+Pause-state correctness (Lin: STRONG — PortAudio keeps calling the
+callback after pause(); if the engine renders the next chunk, you get
+audible dropouts on resume — a real, common bug)
+  T36  _render() while state == PAUSED returns silence (zeros) and does
+       NOT advance position. Catches the "pause clicks" regression
+       where the buffer cursor moves while the user thinks playback is
+       held.
+
+Loop-region edge cases (Lin: STRONG — undefined behavior today; the
+spec must pick one and the test pins it)
+  T37  set_position(t < loop_start) while a loop region is active
+       clamps INTO the loop region (cursor jumps to loop_start). The
+       alternative — temporarily exiting the loop — is a foot-gun for
+       the editor's scrubbing UX. v0.12 picks clamp-into-loop; if the
+       implementer prefers exit-loop, update the spec text in §11
+       Component 10 first.
+
+Metronome timing tightness (Lin: STRONG for a percussion app — a 6 ms
+slop in the click position is audible to a drummer; tighten to 2 ms)
+  T38  Metronome click within ±2 ms of beat position. T22's ±6 ms
+       window is too generous for the target user; if the engine
+       quantizes click placement to buffer boundaries (off by one
+       buffer at 5 ms = 5 ms slop), this test fails and the engine
+       must fix it.
+
+Replace-audio safety (Lin: STRONG — T33 only checks state transition,
+not that subsequent renders are sane)
+  T39  After replace_audio() with a shorter buffer, the next _render()
+       call does NOT raise IndexError, does NOT return uninitialized
+       memory, and either returns silence or honors the new buffer
+       length. T33 left this gap; T39 closes it.
+
+Tightening of v0.11 panel additions
+  T34  TIGHTENED: also assert at least one rendered chunk matches
+       audio[expected_pos:expected_pos+512] for stable position. The
+       v0.11 form ("|buf| <= 0.51") catches catastrophic OOB but a torn
+       read from a wildly different position would pass.
+
+============================================================
+WEAK CONSENSUS / OPEN QUESTIONS (carry from v0.11 + v0.12)
 ============================================================
 
 OQ-1  Output device hot-swap (user changes Windows default mid-playback).
       Surface as PlaybackError + auto-stop, or attempt re-open?
 OQ-2  Editor playhead callback API (above).
 OQ-3  T22 metronome detection via "peaks > 0.5" threshold is brittle —
-      depends on the click sample's peak magnitude. Refactor to
-      detect-via-correlation in v1.1. [Lin: 1/9 — defer.]
+      depends on the click sample's peak magnitude. v0.12 (Lin):
+      revisit; replace with cross-correlation against the click sample,
+      threshold on correlation peak. Tracker for v1.1 cleanup.
 """
 
 from __future__ import annotations
@@ -537,3 +581,96 @@ def test_T35_playback_auto_stops_at_end_of_buffer():
             f"engine stuck in {eng.state} past end of audio; "
             "must auto-transition to STOPPED"
         )
+
+
+# ---------------------------------------------------------------
+# v0.12 panel additions (Lin DSP review + principal-engineer synthesis)
+# ---------------------------------------------------------------
+
+def test_T36_render_during_pause_returns_silence_and_holds_position():
+    """v0.12 (Lin): PortAudio keeps invoking the callback after pause();
+    if _render() advances the buffer cursor while paused, you get a
+    'pause click' on resume — audible dropout because the playhead is
+    no longer where the user thinks it is."""
+    from voxkit.playback.engine import PlaybackEngine
+    with patch("voxkit.playback.engine._open_output_stream", return_value=MagicMock()):
+        eng = PlaybackEngine(session=_make_session(duration_s=2.0))
+        eng.play()
+        eng.set_position(0.5)
+        eng.pause()
+        position_before = eng.position
+        out = eng._render(n_frames=1024)
+        position_after = eng.position
+
+        np.testing.assert_array_equal(out, np.zeros(1024, dtype=out.dtype))
+        assert position_after == pytest.approx(position_before, abs=1e-9), (
+            f"position advanced during pause: {position_before:.4f} → "
+            f"{position_after:.4f}"
+        )
+
+
+def test_T37_set_position_inside_loop_clamps_into_loop_region():
+    """v0.12 (Lin): with a loop region active, scrubbing OUTSIDE the
+    loop must either (a) clamp the position into the loop, or (b)
+    temporarily clear the loop. The undefined-behavior status quo is a
+    foot-gun. v0.12 picks clamp-into-loop (cursor jumps to loop_start);
+    flip the test if the spec is amended to choose otherwise."""
+    from voxkit.playback.engine import PlaybackEngine
+    with patch("voxkit.playback.engine._open_output_stream", return_value=MagicMock()):
+        eng = PlaybackEngine(session=_make_session(duration_s=2.0))
+        eng.set_loop(start=0.5, end=1.0)
+
+        eng.set_position(0.2)   # before loop start
+        assert eng.position == pytest.approx(0.5, abs=1e-9), (
+            "set_position before loop_start did not clamp into loop"
+        )
+        eng.set_position(1.5)   # after loop end
+        assert eng.position == pytest.approx(0.5, abs=1e-9) or \
+               eng.position == pytest.approx(1.0, abs=1e-9), (
+            "set_position past loop_end neither clamped to start nor end"
+        )
+
+
+def test_T38_metronome_clicks_within_2ms_of_beat():
+    """v0.12 (Lin): T22's ±6 ms window is audible slop for a drummer.
+    A correctly-implemented metronome places clicks at exact beat
+    sample-positions; ±2 ms (32 samples @ 16k) is the tightness a
+    percussion app should commit to."""
+    from voxkit.playback.engine import PlaybackEngine
+    with patch("voxkit.playback.engine._open_output_stream", return_value=MagicMock()):
+        eng = PlaybackEngine(session=_make_session(duration_s=2.0, bpm=120))
+        eng.metronome_enabled = True
+        eng.play()
+        out = eng._render(n_frames=16_000 * 2)
+        peak_indices = np.where(np.abs(out) > 0.5)[0]
+
+        max_slop_samples = int(0.002 * 16_000)   # ±2 ms
+        for beat_s in (0.0, 0.5, 1.0, 1.5):
+            beat_idx = int(beat_s * 16_000)
+            in_window = peak_indices[
+                (peak_indices >= beat_idx - max_slop_samples) &
+                (peak_indices <= beat_idx + max_slop_samples)
+            ]
+            assert len(in_window) > 0, (
+                f"no metronome click within ±2 ms of beat {beat_s}s"
+            )
+
+
+def test_T39_render_after_replace_audio_no_oob_no_garbage():
+    """v0.12 (Lin): T33 only asserts a state transition. It doesn't
+    actually try to render past where the new (shorter) buffer ends.
+    A naive implementation that doesn't update its internal length
+    cache will IndexError or return uninitialized memory."""
+    from voxkit.playback.engine import PlaybackEngine
+    with patch("voxkit.playback.engine._open_output_stream", return_value=MagicMock()):
+        eng = PlaybackEngine(session=_make_session(duration_s=10.0))
+        eng.play()
+        eng.set_position(0.4)
+        eng.replace_audio(np.zeros(8_000, dtype=np.float32))   # 0.5s at 16k
+
+        # Try to render past end of the new buffer.
+        for _ in range(5):
+            out = eng._render(n_frames=1024)
+            assert out.shape == (1024,)
+            assert np.all(np.isfinite(out)), "render returned non-finite samples"
+            assert np.all(np.abs(out) <= 1.0 + 1e-6), "render returned out-of-range samples"

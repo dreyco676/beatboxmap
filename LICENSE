@@ -1,0 +1,19 @@
+VoxKit is licensed under the GNU General Public License v3.0 or later.
+
+SPDX-License-Identifier: GPL-3.0-or-later
+
+The full canonical text of GPL v3 lives in `LICENSES/GPL-3.0-or-later.txt`
+(the conventional REUSE / SPDX layout). For the upstream source, see:
+
+    https://www.gnu.org/licenses/gpl-3.0.txt
+
+A copy must be present in `LICENSES/` for `reuse lint` to pass. If the
+file is missing in your checkout, fetch it once from the URL above:
+
+    mkdir -p LICENSES
+    curl -L https://www.gnu.org/licenses/gpl-3.0.txt -o LICENSES/GPL-3.0-or-later.txt
+
+You can also obtain the canonical text from any GNU mirror or from the
+`reuse` tool's bundled SPDX license registry:
+
+    reuse download GPL-3.0-or-later

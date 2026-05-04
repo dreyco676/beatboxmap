@@ -85,7 +85,45 @@ Hardening surface (Lin, Alex, Sam, Casey, Riley, Marco: 6/9)
        deliver either; the contract upstream of the ring is float32).
 
 ============================================================
-WEAK CONSENSUS / OPEN QUESTIONS
+v0.12 PANEL ADDITIONS (Lin DSP review + principal-engineer synthesis;
+three of four review agents rate-limited)
+============================================================
+
+Skip-condition gap (Lin: STRONG — T17/T18 each only run on one OS, so
+on the OTHER platform's CI the priority abstraction is unverified.
+Q77 import-graph isolation makes this safe FROM platform-leak, but
+nothing currently tests the dispatch table itself)
+  T31  Platform priority dispatch is complete: a mocked-OS test calls
+       _set_thread_priority for each known _current_platform() value
+       ("Windows", "Linux", "Darwin", "unknown"). Asserts the right
+       priority arg is forwarded (or a documented no-op + warning for
+       unsupported). Runs on EVERY CI platform — closes the skipif
+       coverage gap without re-introducing platform coupling.
+
+Device-status surfacing (Lin: STRONG — sounddevice passes a non-None
+`status` argument for input_overflow / priming; today's callbacks
+silently drop that signal)
+  T32  Callback called with status=CallbackFlags(input_overflow=True)
+       increments a separate device_overflow_count. PortAudio's report
+       of an overflow is information the UI needs; conflating it with
+       ring-full drops loses the diagnostic.
+
+Lifecycle robustness, second pass (Lin: STRONG — v0.11 added T27/T28
+for open-twice and close-never-opened; the open→close→open cycle is
+the next most likely lifecycle failure)
+  T33  open_stream("0") → close_stream() → open_stream("0") cycles
+       cleanly. No lingering threads, no leaked PortAudio handles,
+       no StreamAlreadyOpen on the second open. Catches state-machine
+       leaks that pass the single-shot tests.
+
+Tightening of v0.11 panel additions
+  T26  KEPT but documented as a wall-clock measurement; rename clarified
+       in the test docstring. The v0.11 form ("> 1000 ticks") is CPU-
+       dependent. v0.12 tightens to a RATIO test against a no-callback
+       baseline so it doesn't flake on slow CI runners.
+
+============================================================
+WEAK CONSENSUS / OPEN QUESTIONS (carry from v0.11 + v0.12)
 ============================================================
 
 OQ-1  USB hot-plug during recording → DeviceDisconnected mid-stream.
@@ -94,7 +132,12 @@ OQ-1  USB hot-plug during recording → DeviceDisconnected mid-stream.
 OQ-2  Linux PipeWire backend test parity (Phase 1.5; deferred per Q84).
 OQ-3  T25 reads .importlinter via configparser; if that file's section
       schema changes, this test breaks before lint-imports does. Sam
-      flagged. Defer: lint-imports owns the schema; we accept fragility.
+      flagged. v0.12 tracker: replace with subprocess invocation of
+      lint-imports + exit-code assertion.
+OQ-4  v0.11 T12 (gil_hold_time wall-clock) is now redundant with
+      v0.11 T26 (parallel-thread GIL release) and v0.12 T26 retighten.
+      Lin recommended deletion or rename. v0.12: rename to
+      _wallclock_under_100us in a follow-up cleanup PR; not blocking.
 """
 
 from __future__ import annotations
@@ -509,6 +552,77 @@ def test_T29_atomic_counter_concurrent_increment_no_torn_writes():
         t.join()
 
     assert counter.value == n_per_thread * n_threads
+
+
+# ---------------------------------------------------------------
+# v0.12 panel additions (Lin DSP review + principal-engineer synthesis)
+# ---------------------------------------------------------------
+
+def test_T31_priority_dispatch_table_complete():
+    """v0.12 (Lin) — closes the T17/T18 skip-on-other-platform gap.
+    The priority dispatch must be complete and tested on EVERY CI
+    platform, not only on the one matching the production target."""
+    from voxkit.audio.recorder import _set_thread_priority
+
+    cases = [
+        ("Windows", "Pro Audio"),
+        ("Linux", ("SCHED_FIFO", 80)),
+        ("Darwin", None),       # documented no-op for v1.0
+        ("unknown", None),       # fall-through; warns but does not crash
+    ]
+    for platform_name, expected in cases:
+        with patch("voxkit.audio.recorder._current_platform", return_value=platform_name):
+            with patch("voxkit.audio.recorder._apply_priority") as apply_prio:
+                _set_thread_priority(_current_platform_value=platform_name)
+                if expected is None:
+                    apply_prio.assert_not_called()
+                else:
+                    apply_prio.assert_called_once_with(expected)
+
+
+def test_T32_callback_surfaces_device_overflow_separate_from_ring_full():
+    """v0.12 (Lin): PortAudio passes status.input_overflow when the
+    device's own buffer overran (a different failure mode than our ring
+    being full). Conflating the two loses the diagnostic. Track them
+    in separate counters."""
+    from voxkit.audio.recorder import LockFreeRing, AtomicCounter, build_callback
+    ring = LockFreeRing(capacity=4096)
+    drop_counter = AtomicCounter()
+    overflow_counter = AtomicCounter()
+
+    cb = build_callback(ring=ring, device_overflow_counter=overflow_counter)
+    buf = np.zeros(256, dtype=np.float32)
+
+    class StatusFlag:
+        input_overflow = True
+        output_underflow = False
+
+    cb(buf, frames=256, time_info=None, status=StatusFlag(),
+       dropped_counter=drop_counter)
+    assert overflow_counter.value == 1
+    assert drop_counter.value == 0   # ring push succeeded; not a drop
+
+
+def test_T33_open_close_open_cycle_is_clean():
+    """v0.12 (Lin): two single-shot tests (T07 open → check; T08 close →
+    check) do not exercise the state machine across cycles. A leaked
+    worker thread or unreleased PortAudio handle would pass T07/T08 and
+    fail T33."""
+    import threading
+    from voxkit.audio.recorder import Recorder
+    with patch("voxkit.audio.recorder._open_native_stream", return_value=MagicMock()):
+        rec = Recorder()
+        baseline_threads = set(threading.enumerate())
+
+        rec.open_stream("0")
+        rec.close_stream()
+        rec.open_stream("0")     # must not raise StreamAlreadyOpen
+        rec.close_stream()
+
+        # No new threads should remain alive after the cycle.
+        leaked = [t for t in (set(threading.enumerate()) - baseline_threads)
+                  if t.is_alive()]
+        assert leaked == [], f"open/close/open/close leaked threads: {leaked}"
 
 
 def test_T30_int16_device_input_normalized_to_float32():

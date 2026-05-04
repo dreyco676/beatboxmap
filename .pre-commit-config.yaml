@@ -1,0 +1,26 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Q82 (SPDX) and Q77 (import-graph) enforcement at the local boundary.
+# Mirrors the static-checks job in .github/workflows/ci.yml.
+repos:
+  - repo: https://github.com/fsfe/reuse-tool
+    rev: v3.0.2
+    hooks:
+      - id: reuse
+
+  - repo: https://github.com/seddonym/import-linter
+    rev: v2.0
+    hooks:
+      - id: import-linter
+        # Requires the package to be importable in the env; relies on
+        # `pip install -e .` having been run.
+        pass_filenames: false
+        always_run: true
+
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v4.6.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-yaml
+      - id: check-toml
+      - id: check-merge-conflict
