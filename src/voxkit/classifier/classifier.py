@@ -68,6 +68,10 @@ class Classifier:
         self.softmax_threshold: float = 0.5
         self._pca_matrix: np.ndarray | None = None
         self._classes: list[str] | None = None
+        # Stored AVP data for recalibration without re-providing AVP
+        self._stored_avp_X: np.ndarray | None = None
+        self._stored_avp_y: np.ndarray | None = None
+        self._stored_avp_subjects: np.ndarray | None = None
 
     @classmethod
     def untrained(cls, taxonomy: TaxonomyConfig | None, embedding_dim: int) -> "Classifier":
@@ -159,6 +163,16 @@ class Classifier:
         ))
         self._fitted = True
 
+    def _store_avp(
+        self,
+        avp_embeddings: np.ndarray,
+        avp_labels: np.ndarray,
+        avp_subjects: np.ndarray,
+    ) -> None:
+        self._stored_avp_X = avp_embeddings
+        self._stored_avp_y = avp_labels
+        self._stored_avp_subjects = avp_subjects
+
     def fit(
         self,
         avp_embeddings: np.ndarray,
@@ -167,6 +181,7 @@ class Classifier:
         pca_matrix: np.ndarray | None = None,
     ) -> None:
         D = avp_embeddings.shape[1]
+        self._store_avp(avp_embeddings, avp_labels, avp_subjects)
         self._do_fit(
             avp_embeddings=avp_embeddings,
             avp_labels=avp_labels,
@@ -179,14 +194,18 @@ class Classifier:
 
     def fit_with_calibration(
         self,
-        avp_embeddings: np.ndarray,
-        avp_labels: np.ndarray,
-        avp_subjects: np.ndarray,
-        calibration_embeddings: np.ndarray,
-        calibration_labels: np.ndarray,
-        calibration_weight: float,
+        avp_embeddings: np.ndarray | None = None,
+        avp_labels: np.ndarray | None = None,
+        avp_subjects: np.ndarray | None = None,
+        calibration_embeddings: np.ndarray | None = None,
+        calibration_labels: np.ndarray | None = None,
+        calibration_weight: float = 1.0,
         pca_matrix: np.ndarray | None = None,
     ) -> None:
+        if avp_embeddings is None:
+            avp_embeddings = self._stored_avp_X
+            avp_labels = self._stored_avp_y
+            avp_subjects = self._stored_avp_subjects
         # Snapshot pre-calibration state via a plain fit
         snapshot = Classifier.untrained(self.taxonomy, self.embedding_dim)
         snapshot._do_fit(
@@ -265,6 +284,34 @@ class Classifier:
         return results
 
     # ------------------------------------------------------------------
+    # Snapshot / restore (CalibrationManager rollback)
+    # ------------------------------------------------------------------
+
+    def snapshot(self) -> dict:
+        def _copy(v):
+            return v.copy() if isinstance(v, np.ndarray) else v
+        return {
+            "_fitted": self._fitted,
+            "lr_coefficients_": _copy(self.lr_coefficients_),
+            "_lr_intercepts": _copy(self._lr_intercepts),
+            "T": self.T,
+            "class_centroids_full_dim": _copy(self.class_centroids_full_dim),
+            "_avp_centroids": _copy(self._avp_centroids),
+            "pooled_cov_cholesky_full_dim": _copy(self.pooled_cov_cholesky_full_dim),
+            "distance_thresholds": _copy(self.distance_thresholds),
+            "softmax_threshold": self.softmax_threshold,
+            "_pca_matrix": _copy(self._pca_matrix),
+            "_classes": list(self._classes) if self._classes is not None else None,
+            "_stored_avp_X": _copy(self._stored_avp_X),
+            "_stored_avp_y": _copy(self._stored_avp_y),
+            "_stored_avp_subjects": _copy(self._stored_avp_subjects),
+        }
+
+    def restore(self, state: dict) -> None:
+        for k, v in state.items():
+            setattr(self, k, v)
+
+    # ------------------------------------------------------------------
     # Distribution-shift threshold (Q45)
     # ------------------------------------------------------------------
 
@@ -291,6 +338,9 @@ class Classifier:
             "_pca_matrix": self._pca_matrix,
             "_classes": self._classes,
             "_fitted": self._fitted,
+            "_stored_avp_X": self._stored_avp_X,
+            "_stored_avp_y": self._stored_avp_y,
+            "_stored_avp_subjects": self._stored_avp_subjects,
         }
         with open(path, "wb") as f:
             pickle.dump(state, f)
