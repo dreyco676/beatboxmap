@@ -625,9 +625,9 @@ def test_T37_set_position_inside_loop_clamps_into_loop_region():
             "set_position before loop_start did not clamp into loop"
         )
         eng.set_position(1.5)   # after loop end
-        assert eng.position == pytest.approx(0.5, abs=1e-9) or \
-               eng.position == pytest.approx(1.0, abs=1e-9), (
-            "set_position past loop_end neither clamped to start nor end"
+        assert eng.position == pytest.approx(0.5, abs=1e-9), (
+            "set_position past loop_end should clamp to loop_start "
+            "(v0.12 picks clamp-into-loop; flip test if spec changes)"
         )
 
 

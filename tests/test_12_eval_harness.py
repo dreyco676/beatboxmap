@@ -265,7 +265,9 @@ def test_T10_non_overlapping_cis_higher_mean_wins():
 
 def test_T11_overlapping_cis_use_pilot_ood_tiebreaker():
     from voxkit.eval.substrate_bakeoff import substrate_decision
-    rng = np.random.default_rng(11)
+    # seed=0 produces genuine CI overlap (CI gap ≈ -0.037);
+    # seed=11 yielded means 0.860 vs 0.822 — CIs never actually touched.
+    rng = np.random.default_rng(0)
     panns_scores = rng.normal(0.85, 0.05, size=20)
     beats_scores = rng.normal(0.84, 0.05, size=20)
     pilot_ood = MagicMock(return_value="beats")

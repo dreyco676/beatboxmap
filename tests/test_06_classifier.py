@@ -883,7 +883,7 @@ def test_T50_temperature_scaling_lowers_ece_on_holdout():
         confidences = probs.max(axis=1)
         predictions = probs.argmax(axis=1)
         # Map true labels to integer indices matching predictions' order.
-        class_order = sorted(set(y))
+        class_order = sorted(set(true_labels))
         true_idx = np.array([class_order.index(lbl) for lbl in true_labels])
         accuracies = (predictions == true_idx).astype(float)
         bin_edges = np.linspace(0.0, 1.0, n_bins + 1)
