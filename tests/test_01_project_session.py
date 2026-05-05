@@ -143,6 +143,21 @@ OQ-3  Concurrent save safety (two VoxKit processes writing to the same
 OQ-4  v0.12: file-locking on save (advisory flock) so a crashed prior
       VoxKit instance doesn't leave the .voxkit half-written. Defer;
       v1.0 hobby-scope acceptable, atomic-replace covers most of it.
+
+============================================================
+SPEC §11 COMPONENT 1 MIGRATION ADDITIONS (v0.11 updated spec)
+============================================================
+
+Older-version migration coverage (spec §11 Component 1, lines 1116-1117)
+  T32  v0.6 → v0.7 migration: synthetic v0.6 session with PlattCalibration
+       loads cleanly; output_calibration is None post-migration; migration
+       banner flag set so the Editor can prompt the user to re-run
+       output calibration.
+  T33  v0.8 → v0.9 migration: if pca_matrix_present == True, the old
+       PCA-based Mahalanobis is incompatible with the v0.9 full-dim
+       Cholesky format; mahalanobis_full_dim is set to None on load;
+       persistent (non-dismissable) banner state set so the Editor
+       renders the PCA-Mahalanobis recalibration banner (§11 Component 11).
 """
 
 from pathlib import Path
@@ -662,3 +677,57 @@ def test_T31_save_cleans_up_temp_files(tmp_path: Path):
         f"save left {len(siblings)} temp file(s) on disk: "
         f"{[p.name for p in siblings]}"
     )
+
+
+# ---------------------------------------------------------------
+# Spec §11 Component 1 migration additions (v0.11 updated spec)
+# ---------------------------------------------------------------
+
+def test_T32_v06_to_v07_migration_drops_platt_calibration():
+    """v0.6→v0.7: a synthetic v0.6 bundle with PlattCalibration migrates
+    cleanly; output_calibration is None post-migration; banner flag is set
+    so the Editor can prompt the user to re-run output calibration
+    (spec §11 Component 1)."""
+    from voxkit.core.migrations import migrate_0_6_to_0_7
+
+    raw = {
+        "manifest": {"voxkit_format_version": "0.6"},
+        "output_calibration": {
+            "type": "PlattCalibration",
+            "A": -1.2,
+            "B": 0.5,
+        },
+    }
+    out = migrate_0_6_to_0_7(raw)
+    # PlattCalibration is incompatible with v0.7+; migrator must drop it.
+    assert out.get("output_calibration") is None
+    assert out["manifest"]["voxkit_format_version"] == "0.7"
+    # Banner state: Editor checks this to prompt the user to re-calibrate.
+    assert out.get("output_calibration_migration_banner") is True
+
+
+def test_T33_v08_to_v09_migration_discards_pca_mahalanobis():
+    """v0.8→v0.9: if pca_matrix_present == True in the v0.8 bundle, the
+    old PCA-based Mahalanobis is incompatible with the v0.9 full-dim
+    Cholesky format. mahalanobis_full_dim must be None after migration;
+    a persistent (non-dismissable) banner flag is set so the Editor renders
+    the PCA-Mahalanobis recalibration banner (spec §11 Component 1 + §11
+    Component 11 — banner fires when mahalanobis_full_dim is None after
+    v0.8→v0.9 migration)."""
+    from voxkit.core.migrations import migrate_0_8_to_0_9
+
+    raw = {
+        "manifest": {"voxkit_format_version": "0.8"},
+        "pca_matrix_present": True,
+        "mahalanobis_full_dim": {
+            "class_centroids_pca_dim": [[0.1] * 64] * 4,
+            "pca_mahalanobis_thresholds": [2.5, 2.5, 2.5, 2.5],
+        },
+    }
+    out = migrate_0_8_to_0_9(raw)
+    assert out["manifest"]["voxkit_format_version"] == "0.9"
+    # PCA-based Mahalanobis discarded; None until user re-runs calibration.
+    assert out.get("mahalanobis_full_dim") is None
+    # Persistent banner flag: Editor checks this to render the non-dismissable
+    # PCA-Mahalanobis recalibration banner (§11 Component 11, line 1936).
+    assert out.get("pca_mahalanobis_migration_banner") is True

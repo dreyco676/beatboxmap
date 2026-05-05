@@ -651,7 +651,10 @@ def test_T32_clean_output_does_not_break_onset_detection():
     from voxkit.dsp.onset_eval import f_measure
 
     fs = 16_000
-    perf_times_ms = [200.0, 480.0, 760.0, 1040.0, 1320.0, 1600.0, 1880.0]
+    # 1680 ms is 80 ms from the nearest click (1600 ms), well outside the
+    # ±15 ms guard window; placing it at 1600 ms was a stub-era fixture
+    # bug that only worked because the stub ignored click_track suppression.
+    perf_times_ms = [200.0, 480.0, 760.0, 1040.0, 1320.0, 1680.0, 1880.0]
     perf = np.zeros(fs * 2, dtype=np.float32)
     for t_ms in perf_times_ms:
         idx = int(t_ms * 1e-3 * fs)

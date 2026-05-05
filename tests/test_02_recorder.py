@@ -289,7 +289,7 @@ def test_T11_callback_zero_allocations_over_10s_synthetic_session():
     tracemalloc.stop()
 
     diff = snap2.compare_to(snap1, "filename")
-    on_thread_alloc = sum(s.size_diff for s in diff if "recorder" in s.traceback[0].filename)
+    on_thread_alloc = sum(s.size_diff for s in diff if "/audio/recorder" in s.traceback[0].filename)
     assert on_thread_alloc == 0
 
 

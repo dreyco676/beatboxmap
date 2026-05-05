@@ -107,6 +107,30 @@ def migrate_0_9_to_0_10_cholesky(data: dict[str, Any]) -> dict[str, Any]:
     return result
 
 
+def migrate_0_6_to_0_7(data: dict[str, Any]) -> dict[str, Any]:
+    """v0.6 → v0.7: drop PlattCalibration; set banner flag for Editor."""
+    manifest = dict(data.get("manifest", {}))
+    manifest["voxkit_format_version"] = "0.7"
+    return {
+        **data,
+        "manifest": manifest,
+        "output_calibration": None,
+        "output_calibration_migration_banner": True,
+    }
+
+
+def migrate_0_8_to_0_9(data: dict[str, Any]) -> dict[str, Any]:
+    """v0.8 → v0.9: discard PCA-based Mahalanobis when pca_matrix_present;
+    set banner flag so Editor renders the non-dismissable recalibration banner."""
+    manifest = dict(data.get("manifest", {}))
+    manifest["voxkit_format_version"] = "0.9"
+    result = {**data, "manifest": manifest}
+    if data.get("pca_matrix_present"):
+        result["mahalanobis_full_dim"] = None
+        result["pca_mahalanobis_migration_banner"] = True
+    return result
+
+
 def migrate_0_4_to_0_9(data: dict[str, Any]) -> dict[str, Any]:
     """v0.4 → v0.9: no structural changes; stamp version."""
     manifest = dict(data.get("manifest", {}))

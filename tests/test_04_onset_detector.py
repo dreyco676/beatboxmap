@@ -138,6 +138,16 @@ OQ-4  Release-gate thresholds (T18-T21) are scattered as magic numbers
       across four tests. v0.12 (Lin WEAK): consolidate into a single
       RELEASE_GATE_THRESHOLDS dict in the module under test; tests
       assert against that dict. Defer to a follow-up tidy commit.
+
+============================================================
+SPEC §11 COMPONENT 4 ADDITION (v0.11 updated spec)
+============================================================
+
+click_guard_fire_rate contract (spec §11 Component 4, line 1472)
+  T30  click_guard_fire_rate: verify correct rate calculation on synthetic
+       data with known click positions and raw onsets. Rate = fraction of
+       click positions (within the most recent window_bars bars) that had
+       a raw onset within ±15 ms.
 """
 
 from __future__ import annotations
@@ -504,3 +514,45 @@ def test_T29_detector_robust_to_short_dropout():
     assert spurious == [], (
         f"detector fired spurious onsets at dropout boundary: {spurious}"
     )
+
+
+# ---------------------------------------------------------------
+# Spec §11 Component 4 addition (v0.11 updated spec)
+# ---------------------------------------------------------------
+
+def test_T30_click_guard_fire_rate_calculates_correctly():
+    """click_guard_fire_rate returns the fraction of click positions (within
+    window_bars bars) that had a raw onset within ±15 ms. Spec §11 Component 4.
+
+    Synthetic setup: 4 click positions; 3 have a matching raw onset within
+    ±15 ms, 1 does not → expected rate = 3/4 = 0.75."""
+    from voxkit.dsp.onsets import OnsetDetector
+
+    fs = 16_000
+    bpm = 120.0
+
+    # Click positions at 0.5 s, 1.0 s, 1.5 s, 2.0 s.
+    click_positions = [
+        int(0.500 * fs),
+        int(1.000 * fs),
+        int(1.500 * fs),
+        int(2.000 * fs),
+    ]
+    # Raw onsets: first three within ±15 ms of a click; last is far away.
+    raw_onsets = [
+        int(0.505 * fs),   # 5 ms after click at 0.5 s  → within ±15 ms
+        int(0.990 * fs),   # 10 ms before click at 1.0 s → within ±15 ms
+        int(1.514 * fs),   # 14 ms after click at 1.5 s  → within ±15 ms
+        int(3.000 * fs),   # far from any click           → no match
+    ]
+
+    detector = OnsetDetector(sample_rate=fs)
+    rate = detector.click_guard_fire_rate(
+        click_positions=click_positions,
+        raw_onsets=raw_onsets,
+        window_bars=4,
+        bpm=bpm,
+        sample_rate=fs,
+    )
+    # 3 of 4 clicks had a nearby raw onset → rate = 0.75.
+    assert rate == pytest.approx(0.75, abs=0.01)
