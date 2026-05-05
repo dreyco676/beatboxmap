@@ -1,5 +1,118 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""TDD stub. softmax_with_temperature + fit_temperature + self_test_overfit_guard + select_operating_point per Q26 + Q50 + Q71 + Q75.
+"""Temperature scaling, overfit guard, and operating-point selection (Q26, Q50, Q71, Q75)."""
 
-Implement to drive the corresponding tests in tests/ to green.
-"""
+from __future__ import annotations
+
+from typing import Any
+
+import numpy as np
+from scipy.optimize import minimize_scalar
+
+
+# ---------------------------------------------------------------
+# Exceptions
+# ---------------------------------------------------------------
+
+class NoOperatingPointFound(Exception):
+    pass
+
+
+# ---------------------------------------------------------------
+# Numerically-stable softmax with temperature
+# ---------------------------------------------------------------
+
+def softmax_with_temperature(logits: np.ndarray, T: float) -> np.ndarray:
+    """Row-wise softmax(logits / T) with log-sum-exp stability."""
+    scaled = logits / T
+    shifted = scaled - scaled.max(axis=1, keepdims=True)
+    exp = np.exp(shifted)
+    return exp / exp.sum(axis=1, keepdims=True)
+
+
+# ---------------------------------------------------------------
+# Temperature fitting (Q75)
+# ---------------------------------------------------------------
+
+def fit_temperature(
+    logits: np.ndarray,
+    labels: np.ndarray,
+    *,
+    indices: list[int] | None = None,
+    T_min: float = 0.1,
+    T_max: float = 10.0,
+) -> float:
+    """Fit scalar temperature T by minimising NLL on (logits, labels).
+
+    Parameters
+    ----------
+    logits  : (N, C) raw logits from the LR head
+    labels  : (N,) integer class indices
+    indices : original sample indices (passed through for T45 spying)
+    """
+    classes = sorted(set(labels))
+    label_to_idx = {c: i for i, c in enumerate(classes)}
+    y_int = np.array([label_to_idx[l] for l in labels])
+
+    def nll(T):
+        probs = softmax_with_temperature(logits, T)
+        probs = np.clip(probs, 1e-15, 1.0)
+        return -float(np.mean(np.log(probs[np.arange(len(y_int)), y_int])))
+
+    result = minimize_scalar(nll, bounds=(T_min, T_max), method="bounded")
+    T = float(np.clip(result.x, T_min, T_max))
+    return T
+
+
+# ---------------------------------------------------------------
+# LR head fitting (Q26)
+# ---------------------------------------------------------------
+
+def fit_lr_head(
+    X_train: np.ndarray,
+    y_train: np.ndarray,
+    *,
+    indices: list[int] | None = None,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Fit a logistic regression head; return (coefficients, intercepts)."""
+    from sklearn.linear_model import LogisticRegression
+    lr = LogisticRegression(max_iter=1000, random_state=0)
+    lr.fit(X_train, y_train)
+    return lr.coef_, lr.intercept_
+
+
+# ---------------------------------------------------------------
+# Self-test overfit guard (Q71)
+# ---------------------------------------------------------------
+
+def self_test_overfit_guard(
+    f1_calibrated: float,
+    f1_baseline: float,
+) -> tuple[bool, dict[str, Any]]:
+    """Return (passed, diagnostics). Passes if drop ≤ 0.01."""
+    delta = f1_calibrated - f1_baseline
+    passed = delta >= -0.01 - 1e-9
+    return passed, {
+        "f1_calibrated": f1_calibrated,
+        "f1_baseline": f1_baseline,
+        "delta": delta,
+    }
+
+
+# ---------------------------------------------------------------
+# Operating-point selection (Q50, §7.3)
+# ---------------------------------------------------------------
+
+def select_operating_point(
+    sweep: list[dict],
+    max_missed_unknown: float,
+    max_false_unknown: float,
+) -> dict:
+    """Return first sweep entry satisfying both Q50 bounds, else raise."""
+    for entry in sweep:
+        if (entry["missed_unknown"] <= max_missed_unknown and
+                entry["false_unknown"] <= max_false_unknown):
+            return entry
+    raise NoOperatingPointFound(
+        f"No operating point satisfies missed_unknown≤{max_missed_unknown} "
+        f"and false_unknown≤{max_false_unknown}"
+    )
