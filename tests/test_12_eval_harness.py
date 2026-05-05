@@ -213,9 +213,10 @@ def test_T04_tier_list_in_stable_order():
 def test_T05_synthetic_tier_prints_warning_banner(capsys):
     from voxkit.eval.tiers import announce_tier
     announce_tier("synthetic")
-    captured = capsys.readouterr().out
-    assert "WARNING" in captured
-    assert "synthetic" in captured.lower()
+    captured = capsys.readouterr()
+    # WARNING goes to stderr to keep stdout clean for JSON output (see T39).
+    assert "WARNING" in captured.err
+    assert "synthetic" in captured.err.lower()
 
 
 def test_T06_banner_mentions_other_tiers(capsys):
