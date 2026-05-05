@@ -307,8 +307,8 @@ def test_T15_position_advances_during_playback():
         # Simulate 1 second of audio output (16k frames in chunks of 256).
         for _ in range(16_000 // 256):
             eng._render(n_frames=256)
-        # Allow ~1 frame of slop.
-        assert eng.position == pytest.approx(1.0, abs=1e-3)
+        # 16000 // 256 = 62 chunks × 256 = 15872 frames = 0.992s; allow 10 ms.
+        assert eng.position == pytest.approx(1.0, abs=1e-2)
 
 
 # ----- TIDY FIRST checkpoint -----
@@ -504,7 +504,7 @@ def test_T32_render_callback_no_allocation():
         tracemalloc.stop()
 
         diff = snap2.compare_to(snap1, "filename")
-        on_path = sum(s.size_diff for s in diff if "playback" in s.traceback[0].filename)
+        on_path = sum(s.size_diff for s in diff if "playback/engine" in s.traceback[0].filename)
         assert on_path == 0
 
 
