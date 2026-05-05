@@ -22,6 +22,9 @@ class AudioContainsNonFinite(Exception):
 
 _REQUIRED_FS = 16_000
 _CLICK_GUARD_MS = 15.0   # ±15 ms suppression window around each click
+_NOISE_FLOOR_MS = 200.0  # first N ms used to estimate noise floor
+_NOISE_GATE_DB = 6.0     # drop onsets whose local peak is < 6 dB above noise floor
+_NOISE_GATE_AMP_FACTOR = 10.0 ** (_NOISE_GATE_DB / 20.0)  # ≈ 2.0
 
 
 class OnsetDetector:
@@ -98,6 +101,7 @@ class OnsetDetector:
             else:
                 i += 1
 
+        raw_onsets_s = self._apply_noise_gate(raw_onsets_s, audio)
         return self._suppress_clicks(raw_onsets_s, click_track)
 
     # ------------------------------------------------------------------
@@ -136,6 +140,30 @@ class OnsetDetector:
     # ------------------------------------------------------------------
     # Private helpers
     # ------------------------------------------------------------------
+
+    def _apply_noise_gate(
+        self,
+        onsets_s: list[float],
+        audio: np.ndarray,
+    ) -> list[float]:
+        """Drop onsets whose local peak amplitude is below 6 dB above the
+        noise floor estimated from the first _NOISE_FLOOR_MS ms of audio."""
+        n_noise = min(len(audio), int(_NOISE_FLOOR_MS / 1000.0 * self._fs))
+        if n_noise == 0:
+            return onsets_s
+        noise_rms = float(np.sqrt(np.mean(audio[:n_noise].astype(np.float64) ** 2)))
+        gate = noise_rms * _NOISE_GATE_AMP_FACTOR
+        if gate == 0.0:
+            return onsets_s
+        filtered: list[float] = []
+        for t in onsets_s:
+            sample = int(round(t * self._fs))
+            start = max(0, sample - self._hop)
+            end = min(len(audio), sample + self._hop)
+            peak = float(np.max(np.abs(audio[start:end].astype(np.float64))))
+            if peak >= gate:
+                filtered.append(t)
+        return filtered
 
     def _suppress_clicks(
         self,

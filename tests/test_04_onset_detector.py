@@ -148,6 +148,13 @@ click_guard_fire_rate contract (spec §11 Component 4, line 1472)
        data with known click positions and raw onsets. Rate = fraction of
        click positions (within the most recent window_bars bars) that had
        a raw onset within ±15 ms.
+
+Noise-floor gate (spec §11 Component 4, line 1471)
+  T31  Noise-floor gate: onsets below 6 dB above the noise floor (estimated
+       from first 200 ms) are dropped. Signal: 200 ms DC at amplitude 0.10
+       (noise floor), then a quiet impulse at 500 ms with peak 0.15 (~3.5 dB
+       above noise floor, below the 6 dB gate). The impulse is the global ODF
+       peak so the relative threshold passes it; only the noise gate drops it.
 """
 
 from __future__ import annotations
@@ -556,3 +563,44 @@ def test_T30_click_guard_fire_rate_calculates_correctly():
     )
     # 3 of 4 clicks had a nearby raw onset → rate = 0.75.
     assert rate == pytest.approx(0.75, abs=0.01)
+
+
+# ---------------------------------------------------------------
+# Spec §11 Component 4: noise-floor gate
+# ---------------------------------------------------------------
+
+def test_T31_noise_floor_gate_drops_quiet_onsets():
+    """Spec §11 Component 4, line 1471: onsets below 6 dB above the noise
+    floor (estimated from the first 200 ms of audio) must be suppressed.
+
+    Signal design:
+    - First 200 ms: DC at amplitude 0.10.  Gives noise_floor_rms = 0.10,
+      so gate_threshold ≈ 0.10 * 10^(6/20) ≈ 0.20.  DC has constant
+      frame energy → ODF = 0 throughout → no false onsets from DC.
+    - At 500 ms: one quiet impulse with peak 0.15 (3.5 dB above floor,
+      below the 6 dB gate).  It IS the global ODF peak so the detector's
+      relative threshold (0.2 * peak) would pass it; the noise gate must
+      drop it.
+
+    Without the noise gate the detector returns [0.5]; with the gate it
+    must return [].
+    """
+    from voxkit.dsp.onsets import OnsetDetector
+
+    fs = 16_000
+    sig = np.zeros(int(1.0 * fs), dtype=np.float32)
+
+    # First 200 ms: constant DC to establish a non-zero noise floor.
+    sig[: int(0.200 * fs)] = 0.10
+
+    # Quiet impulse at 500 ms: 0.15 peak < gate threshold of ≈ 0.20.
+    impulse_amp = 0.15
+    idx = int(0.500 * fs)
+    for k in range(8):
+        if idx + k < len(sig):
+            sig[idx + k] = impulse_amp * (1.0 - k / 8.0)
+
+    onsets = OnsetDetector(sample_rate=fs).detect(sig)
+    assert onsets == [], (
+        f"Quiet onset (peak {impulse_amp}) below 6 dB noise gate not suppressed: {onsets}"
+    )
