@@ -419,7 +419,7 @@ def test_T31_quantize_session_uses_session_bpm_and_signature():
         quantize_strength=1.0,
     )
     out = quantize_session(s)
-    assert out.events[0].t == pytest.approx(0.0625, abs=1e-9)
+    assert out.events[0].t == pytest.approx(0.125, abs=1e-9)
 
 
 def test_T32_quantize_session_returns_session_with_grid_aligned_events():

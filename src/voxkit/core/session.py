@@ -85,6 +85,8 @@ class Session:
     dropped_buffer_count: int = 0
     taxonomy: TaxonomyConfig = field(default_factory=TaxonomyConfig.default_v1_0)
     mahalanobis_full_dim: MahalanobisFullDim | None = None
+    quantize_grid: str = "1/16"
+    quantize_strength: float = 1.0
 
     def __eq__(self, other: object) -> bool:
         if not isinstance(other, Session):
