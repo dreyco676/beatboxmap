@@ -128,6 +128,22 @@ OQ-4  v0.11 T26 hardcodes BEATs input_length = 160000. If the canonical
       BEATs config differs, T26 fails without revealing the truth.
       v0.12 (synthesis): pull the number from a substrate-config
       module, not from the test. Defer to a tidy commit.
+
+============================================================
+SPEC §11 COMPONENT 5 ADDITIONS
+============================================================
+
+BEATs embedding batch shape (spec §11: "shape is (N,2048) PANNs / (N,768) BEATs")
+  T31  extract_batch on a BEATs extractor returns shape (N, 768). T16
+       already covers PANNs; the BEATs dimension is only verified via
+       embedding_dim (T02) and input_length (T26), not through an actual
+       batch extraction call.
+
+RMS values alongside embeddings (spec §11: "RMS values computed correctly")
+  T32  extract_at_onsets_with_rms returns (embeddings, rms_values) where
+       rms_values[i] equals sqrt(mean(window_i**2)) for the audio window
+       centered on onset i. This is the 5th/95th percentile mapping input
+       described in §11.
 """
 
 from __future__ import annotations
@@ -565,3 +581,53 @@ def test_T30_onset_at_buffer_end_zero_padded_right(fake_onnx_path):
         out = ext.extract_at_onsets(audio, onset_times_s=[last_sample_t],
                                      sample_rate=16_000)
     assert out.shape == (1, 2048)
+
+
+# ---------------------------------------------------------------
+# Spec §11 Component 5 additions
+# ---------------------------------------------------------------
+
+def test_T31_beats_extract_batch_shape_is_n_768(fake_onnx_path):
+    """Spec §11: embedding shape is (N, 768) for BEATs. T16 covers PANNs
+    (N, 2048); BEATs is only verified via embedding_dim (T02) and
+    input_length (T26), not through an actual batch extraction call."""
+    from voxkit.classifier.embeddings import EmbeddingExtractor
+    with patch("voxkit.classifier.embeddings._load_onnx_session",
+               return_value=_stub_session(768)):
+        ext = EmbeddingExtractor(onnx_path=fake_onnx_path, substrate_id="beats")
+        windows = [np.zeros(ext.input_length, dtype=np.float32) for _ in range(4)]
+        out = ext.extract_batch(windows)
+    assert out.shape == (4, 768)
+
+
+def test_T32_extract_at_onsets_with_rms_returns_window_rms(fake_onnx_path):
+    """Spec §11: RMS values computed correctly. extract_at_onsets_with_rms
+    returns (embeddings, rms_values) where rms_values[i] is the RMS of the
+    audio window centred on onset i — the 5th/95th percentile mapping input
+    described in §11 Component 5."""
+    from voxkit.classifier.embeddings import EmbeddingExtractor
+
+    with patch("voxkit.classifier.embeddings._load_onnx_session",
+               return_value=_stub_session(2048)):
+        ext = EmbeddingExtractor(onnx_path=fake_onnx_path, substrate_id="panns_cnn14")
+        rng = np.random.default_rng(32)
+        audio = rng.standard_normal(16_000 * 5).astype(np.float32)
+        onset_times_s = [1.0, 2.0, 3.0]
+
+        embeddings, rms_vals = ext.extract_at_onsets_with_rms(
+            audio, onset_times_s=onset_times_s, sample_rate=16_000
+        )
+
+    assert embeddings.shape == (3, 2048)
+    assert rms_vals.shape == (3,)
+    assert rms_vals.dtype == np.float32
+
+    # Each RMS value must match the window actually sliced for that onset.
+    half = ext.input_length // 2
+    for i, t in enumerate(onset_times_s):
+        center = int(round(t * 16_000))
+        win = audio[center - half: center + half]
+        expected = float(np.sqrt(np.mean(win.astype(np.float64) ** 2)))
+        assert rms_vals[i] == pytest.approx(expected, rel=1e-5), (
+            f"onset {t}s: expected RMS {expected:.6f}, got {rms_vals[i]:.6f}"
+        )
