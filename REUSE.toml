@@ -1,0 +1,54 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Project-wide REUSE annotation file (replaces .reuse/dep5).
+# See .reuseignore for directories excluded from compliance checking.
+
+version = 1
+
+# ---------------------------------------------------------------
+# Project source files — all authored by VoxKit contributors
+# ---------------------------------------------------------------
+[[annotations]]
+path = [
+  "src/**",
+  "tests/**",
+  "scripts/**",
+  ".github/**",
+]
+SPDX-FileCopyrightText = "VoxKit contributors"
+SPDX-License-Identifier = "GPL-3.0-or-later"
+
+# ---------------------------------------------------------------
+# Project documentation and root config files
+# ---------------------------------------------------------------
+[[annotations]]
+path = [
+  "CONTRIBUTING.md",
+  "README.md",
+  "VoxKit-spec-v0.11.md",
+  ".gitignore",
+  ".importlinter",
+  ".pre-commit-config.yaml",
+  "pyproject.toml",
+  "REUSE.toml",
+  ".reuseignore",
+]
+SPDX-FileCopyrightText = "VoxKit contributors"
+SPDX-License-Identifier = "GPL-3.0-or-later"
+
+# ---------------------------------------------------------------
+# Cached embedding files (deterministic output, project-authored)
+# ---------------------------------------------------------------
+[[annotations]]
+path = ["data/*.npz", "data/*.json"]
+SPDX-FileCopyrightText = "VoxKit contributors"
+SPDX-License-Identifier = "GPL-3.0-or-later"
+
+# ---------------------------------------------------------------
+# AVP dataset — third-party, CC-BY-4.0
+# Downloaded from Zenodo 5036529/5578744; not committed to git.
+# See CONTRIBUTING.md §Datasets.
+# ---------------------------------------------------------------
+[[annotations]]
+path = "data/avp/**"
+SPDX-FileCopyrightText = "Blas Ishtar, George Tzanetakis, and AVP Dataset contributors"
+SPDX-License-Identifier = "CC-BY-4.0"

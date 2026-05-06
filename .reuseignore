@@ -1,0 +1,13 @@
+# Files and directories excluded from REUSE compliance checking.
+# Syntax follows .gitignore rules.
+
+# Python virtual environment — not project-authored.
+.venv/
+
+# AVP dataset — third-party, CC-BY-4.0, excluded from git via .gitignore.
+# See CONTRIBUTING.md §Datasets for download instructions.
+data/avp/
+
+# macOS metadata (created by macOS Finder; not project-authored).
+.DS_Store
+**/.DS_Store
