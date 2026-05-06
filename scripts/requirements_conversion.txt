@@ -1,0 +1,10 @@
+# Extra packages needed only for model conversion (not runtime deps).
+# Install into the project venv before running the convert_* scripts:
+#
+#   pip install -r scripts/requirements_conversion.txt
+#
+torch>=2.1
+torchaudio>=2.1
+onnx>=1.15
+onnxscript>=0.1
+torchlibrosa>=0.1  # PANNs CNN14 dependency
