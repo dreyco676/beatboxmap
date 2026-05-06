@@ -9,3 +9,7 @@ build/
 htmlcov/
 .pytest_cache/
 *.voxkit.tmp
+models/*.onnx
+models/*.pt
+models/*.pth
+scripts/.beats_src/

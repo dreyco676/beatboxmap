@@ -34,11 +34,15 @@ _SUBSTRATE: dict[str, dict] = {
     },
     "beats": {
         "embedding_dim": 768,
-        "input_length": 160_000,  # 10 s @ 16 kHz
-        "input_name": "audio_data",
+        "input_length": 160_000,  # 10 s @ 16 kHz; fbank pre-computed before ONNX
+        "input_name": "fbank_features",  # ONNX model takes (1, T_frames, 128) fbank
         "output_name": "output",
     },
 }
+
+# BEATs fbank parameters matching BEATs.preprocess() defaults.
+_BEATS_FBANK_MEAN: float = 15.41663
+_BEATS_FBANK_STD: float = 6.55582
 
 _REQUIRED_SAMPLE_RATE = 16_000
 
@@ -114,6 +118,28 @@ class EmbeddingExtractor:
     # Single-window extraction
     # ------------------------------------------------------------------
 
+    def _compute_beats_fbank(self, window: np.ndarray) -> np.ndarray:
+        """Return normalised log-mel fbank (1, T_frames, 128) for the BEATs substrate."""
+        try:
+            import torch
+            import torchaudio.compliance.kaldi as ta_kaldi
+        except ImportError as exc:
+            raise ImportError(
+                "torchaudio is required for BEATs inference. "
+                "Install it with: pip install torchaudio"
+            ) from exc
+
+        waveform = torch.from_numpy(window).unsqueeze(0)  # (1, L)
+        fbank = ta_kaldi.fbank(
+            waveform,
+            num_mel_bins=128,
+            sample_frequency=16_000,
+            frame_length=25,
+            frame_shift=10,
+        )  # (T_frames, 128)
+        fbank = (fbank - _BEATS_FBANK_MEAN) / (2.0 * _BEATS_FBANK_STD)
+        return fbank.unsqueeze(0).numpy()  # (1, T_frames, 128)
+
     def extract(self, window: np.ndarray) -> np.ndarray:
         if window.ndim != 1:
             raise ValueError("window must be mono (1-D ndarray)")
@@ -126,7 +152,10 @@ class EmbeddingExtractor:
                 f"window length {len(window)} does not match "
                 f"expected input length {self.input_length}"
             )
-        inp = window[np.newaxis, :]  # (1, L)
+        if self._substrate_id == "beats":
+            inp = self._compute_beats_fbank(window)  # (1, T_frames, 128)
+        else:
+            inp = window[np.newaxis, :]               # (1, L)
         outputs = self._session.run(None, {self._config["input_name"]: inp})
         emb = outputs[0][0]  # (1, D) → (D,)
         return emb.astype(np.float32)
