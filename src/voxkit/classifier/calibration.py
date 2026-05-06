@@ -72,12 +72,40 @@ def fit_lr_head(
     y_train: np.ndarray,
     *,
     indices: list[int] | None = None,
+    groups: np.ndarray | None = None,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Fit a logistic regression head; return (coefficients, intercepts)."""
+    """Fit a logistic regression head; return (coefficients, intercepts).
+
+    Selects C ∈ {10, 1, 0.1, 0.01} via 3-fold CV (accuracy). When `groups`
+    (subject IDs) are provided and there are ≥ 3 unique groups, inner CV folds
+    are subject-disjoint (GroupKFold), so C is selected for cross-subject
+    generalisation rather than within-subject performance. Cs are tried
+    largest-first so ties break in favour of less regularisation.
+    """
     from sklearn.linear_model import LogisticRegression
-    lr = LogisticRegression(max_iter=1000, random_state=0)
-    lr.fit(X_train, y_train)
-    return lr.coef_, lr.intercept_
+    from sklearn.model_selection import GroupKFold, cross_val_score
+
+    n_unique_groups = len(set(groups)) if groups is not None else 0
+    cv = GroupKFold(n_splits=3) if n_unique_groups >= 3 else 3
+
+    best_c, best_score = 10.0, -1.0
+    for C in [10.0, 1.0, 0.1, 0.01]:
+        lr = LogisticRegression(
+            C=C, solver="saga", penalty="l2", max_iter=5000, random_state=0
+        )
+        scores = cross_val_score(
+            lr, X_train, y_train, cv=cv, scoring="accuracy",
+            groups=groups if n_unique_groups >= 3 else None,
+        )
+        if scores.mean() > best_score:
+            best_score = scores.mean()
+            best_c = C
+
+    lr_final = LogisticRegression(
+        C=best_c, solver="saga", penalty="l2", max_iter=5000, random_state=0
+    )
+    lr_final.fit(X_train, y_train)
+    return lr_final.coef_, lr_final.intercept_
 
 
 # ---------------------------------------------------------------

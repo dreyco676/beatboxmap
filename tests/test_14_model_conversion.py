@@ -258,14 +258,14 @@ def test_T19_beats_embedding_extractor_accepts_model():
     from voxkit.classifier.embeddings import EmbeddingExtractor
     extractor = EmbeddingExtractor(onnx_path=_BEATS_PATH, substrate_id="beats")
     assert extractor.embedding_dim == 768
-    assert extractor.input_length == 160_000
+    assert extractor.input_length == 32_000
 
 
 def test_T20_beats_extract_returns_768_vector():
     _skip_if_missing(_BEATS_PATH)
     from voxkit.classifier.embeddings import EmbeddingExtractor
     extractor = EmbeddingExtractor(onnx_path=_BEATS_PATH, substrate_id="beats")
-    window = np.random.default_rng(0).standard_normal(160_000).astype(np.float32)
+    window = np.random.default_rng(0).standard_normal(32_000).astype(np.float32)
     emb = extractor.extract(window)
     assert emb.shape == (768,), f"Expected (768,); got {emb.shape}"
 
@@ -274,7 +274,7 @@ def test_T21_beats_embedding_is_finite():
     _skip_if_missing(_BEATS_PATH)
     from voxkit.classifier.embeddings import EmbeddingExtractor
     extractor = EmbeddingExtractor(onnx_path=_BEATS_PATH, substrate_id="beats")
-    window = np.random.default_rng(1).standard_normal(160_000).astype(np.float32)
+    window = np.random.default_rng(1).standard_normal(32_000).astype(np.float32)
     emb = extractor.extract(window)
     assert np.all(np.isfinite(emb)), "Embedding contains NaN or Inf"
 
@@ -285,8 +285,8 @@ def test_T22_beats_different_inputs_different_embeddings():
     from voxkit.classifier.embeddings import EmbeddingExtractor
     extractor = EmbeddingExtractor(onnx_path=_BEATS_PATH, substrate_id="beats")
     rng = np.random.default_rng(42)
-    w1 = rng.standard_normal(160_000).astype(np.float32)
-    w2 = rng.standard_normal(160_000).astype(np.float32)
+    w1 = rng.standard_normal(32_000).astype(np.float32)
+    w2 = rng.standard_normal(32_000).astype(np.float32)
     e1 = extractor.extract(w1)
     e2 = extractor.extract(w2)
     assert not np.allclose(e1, e2), (

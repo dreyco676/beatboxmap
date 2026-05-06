@@ -494,9 +494,8 @@ def test_T26_substrate_input_length_contracts(fake_onnx_path):
     with patch("voxkit.classifier.embeddings._load_onnx_session",
                return_value=_stub_session(768)):
         beats = EmbeddingExtractor(onnx_path=fake_onnx_path, substrate_id="beats")
-        # BEATs: 10 seconds @ 16 kHz (per substrate doc; adjust if the
-        # canonical config differs)
-        assert beats.input_length == 160_000
+        # BEATs: 2 seconds @ 16 kHz (narrowed from 10 s to isolate individual hits)
+        assert beats.input_length == 32_000
 
 
 @pytest.mark.slow
@@ -623,10 +622,11 @@ def test_T32_extract_at_onsets_with_rms_returns_window_rms(fake_onnx_path):
     assert rms_vals.dtype == np.float32
 
     # Each RMS value must match the window actually sliced for that onset.
-    half = ext.input_length // 2
+    from voxkit.classifier.embeddings import PRE_ONSET_FRACTION
+    pre = int(ext.input_length * PRE_ONSET_FRACTION)
     for i, t in enumerate(onset_times_s):
         center = int(round(t * 16_000))
-        win = audio[center - half: center + half]
+        win = audio[center - pre: center - pre + ext.input_length]
         expected = float(np.sqrt(np.mean(win.astype(np.float64) ** 2)))
         assert rms_vals[i] == pytest.approx(expected, rel=1e-5), (
             f"onset {t}s: expected RMS {expected:.6f}, got {rms_vals[i]:.6f}"

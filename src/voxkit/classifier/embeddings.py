@@ -34,7 +34,11 @@ _SUBSTRATE: dict[str, dict] = {
     },
     "beats": {
         "embedding_dim": 768,
-        "input_length": 160_000,  # 10 s @ 16 kHz; fbank pre-computed before ONNX
+        # 2 s @ 16 kHz. 10 s was too long for onset extraction — each window
+        # captured many adjacent hits, making class embeddings indistinguishable.
+        # The ONNX model was exported with dynamic_axes on the frames dimension,
+        # so variable-length fbank (≈198 frames for 2 s) is accepted.
+        "input_length": 32_000,
         "input_name": "fbank_features",  # ONNX model takes (1, T_frames, 128) fbank
         "output_name": "output",
     },
@@ -43,6 +47,11 @@ _SUBSTRATE: dict[str, dict] = {
 # BEATs fbank parameters matching BEATs.preprocess() defaults.
 _BEATS_FBANK_MEAN: float = 15.41663
 _BEATS_FBANK_STD: float = 6.55582
+
+# Fraction of the extraction window that falls *before* the onset.
+# 0.20 → 20 % pre-onset silence / 80 % attack + decay, which captures
+# more of the percussion transient than a symmetric (0.50) window.
+PRE_ONSET_FRACTION: float = 0.20
 
 _REQUIRED_SAMPLE_RATE = 16_000
 
@@ -176,10 +185,11 @@ class EmbeddingExtractor:
     def _slice_window(
         self, audio: np.ndarray, center: int
     ) -> np.ndarray:
-        """Return a zero-padded input_length window centred on `center`."""
+        """Return a zero-padded input_length window starting PRE_ONSET_FRACTION
+        before `center` so 80 % of the window captures the attack and decay."""
         n = len(audio)
-        half = self.input_length // 2
-        start = center - half
+        pre = int(self.input_length * PRE_ONSET_FRACTION)
+        start = center - pre
         end = start + self.input_length
         win = np.zeros(self.input_length, dtype=np.float32)
         src_start = max(0, start)

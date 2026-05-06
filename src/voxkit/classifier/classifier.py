@@ -138,6 +138,7 @@ class Classifier:
 
         X_lr = avp_embeddings[lr_mask]
         y_lr = avp_labels[lr_mask]
+        s_lr = avp_subjects[lr_mask]
         X_t = avp_embeddings[t_mask]
         y_t = avp_labels[t_mask]
 
@@ -150,8 +151,8 @@ class Classifier:
             X_lr_head = X_lr
             X_t_head = X_t
 
-        # LR head
-        coef, intercept = fit_lr_head(X_lr_head, y_lr, indices=lr_idx)
+        # LR head — pass subject IDs so inner CV uses subject-disjoint folds
+        coef, intercept = fit_lr_head(X_lr_head, y_lr, indices=lr_idx, groups=s_lr)
         self.lr_coefficients_ = coef
         self._lr_intercepts = intercept
 
