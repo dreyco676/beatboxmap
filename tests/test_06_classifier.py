@@ -745,6 +745,52 @@ def test_T42_threshold_stable_across_seeded_fits():
     )
 
 
+def test_check_distribution_shift_false_below_min_events():
+    """Q44: fewer than min_events → no warning regardless of score."""
+    clf, _ = _trained_classifier()
+    scores = [0.01] * 99   # 99 very low scores — but too few to trigger
+    assert clf.check_distribution_shift(scores, min_events=100) is False
+
+
+def test_check_distribution_shift_fires_when_median_below_threshold():
+    """Q44: fires when median of first 100 scores < Q45 threshold."""
+    clf, _ = _trained_classifier()
+    thresh = clf.get_distribution_shift_threshold()
+    # All scores well below the threshold.
+    scores = [thresh * 0.3] * 100
+    assert clf.check_distribution_shift(scores, min_events=100) is True
+
+
+def test_check_distribution_shift_silent_when_median_above_threshold():
+    """Q44: does not fire when scores are healthy."""
+    clf, _ = _trained_classifier()
+    thresh = clf.get_distribution_shift_threshold()
+    # All scores above the threshold.
+    scores = [min(thresh * 2.0, 0.99)] * 100
+    assert clf.check_distribution_shift(scores, min_events=100) is False
+
+
+def test_check_distribution_shift_uses_only_first_n_scores():
+    """Q44: only the FIRST min_events scores are used; later low scores
+    must not retroactively trigger the warning."""
+    clf, _ = _trained_classifier()
+    thresh = clf.get_distribution_shift_threshold()
+    high = [min(thresh * 2.0, 0.99)] * 100
+    low  = [thresh * 0.1] * 900   # many bad scores after the window
+    assert clf.check_distribution_shift(high + low, min_events=100) is False
+
+
+def test_distribution_shift_threshold_is_score_based_not_mahalanobis():
+    """Q45: threshold must be in [0, 1] (a softmax score fraction),
+    not a Mahalanobis distance (which has no upper bound)."""
+    clf, _ = _trained_classifier()
+    t = clf.get_distribution_shift_threshold()
+    assert 0.0 < t < 1.0, (
+        f"distribution_shift_threshold={t:.4f} is not a softmax score (expected in (0, 1)); "
+        "likely still returning the Mahalanobis distance mean by mistake"
+    )
+
+
 # ---------------------------------------------------------------
 # Operating-point selection (Q50, §7.3)
 # ---------------------------------------------------------------

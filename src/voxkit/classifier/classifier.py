@@ -68,6 +68,8 @@ class Classifier:
         self.softmax_threshold: float = 0.5
         self._pca_matrix: np.ndarray | None = None
         self._classes: list[str] | None = None
+        # Q45: median softmax score on AVP held-out fold × 0.7
+        self._distribution_shift_threshold: float = 0.0
         # Stored AVP data for recalibration without re-providing AVP
         self._stored_avp_X: np.ndarray | None = None
         self._stored_avp_y: np.ndarray | None = None
@@ -187,6 +189,14 @@ class Classifier:
             fit_temperature(logits_t, y_t, indices=t_idx),
             0.1, 10.0,
         ))
+
+        # Q45: distribution-shift threshold = median softmax score on T-fold × 0.7.
+        # Stored in the bundle so the orchestrator can compare live session scores
+        # without knowing how the threshold was derived.
+        probs_t = softmax_with_temperature(logits_t, self.T)
+        t_fold_scores = probs_t.max(axis=1)
+        self._distribution_shift_threshold = float(np.median(t_fold_scores)) * 0.7
+
         self._fitted = True
 
     def _store_avp(
@@ -328,6 +338,7 @@ class Classifier:
             "softmax_threshold": self.softmax_threshold,
             "_pca_matrix": _copy(self._pca_matrix),
             "_classes": list(self._classes) if self._classes is not None else None,
+            "_distribution_shift_threshold": self._distribution_shift_threshold,
             "_stored_avp_X": _copy(self._stored_avp_X),
             "_stored_avp_y": _copy(self._stored_avp_y),
             "_stored_avp_subjects": _copy(self._stored_avp_subjects),
@@ -338,11 +349,27 @@ class Classifier:
             setattr(self, k, v)
 
     # ------------------------------------------------------------------
-    # Distribution-shift threshold (Q45)
+    # Distribution-shift warning (Q44, Q45)
     # ------------------------------------------------------------------
 
     def get_distribution_shift_threshold(self) -> float:
-        return float(np.mean(self.distance_thresholds))
+        """Return the AVP-derived score threshold (Q45)."""
+        return self._distribution_shift_threshold
+
+    def check_distribution_shift(
+        self,
+        event_scores: list[float],
+        min_events: int = 100,
+    ) -> bool:
+        """Return True if a recalibration prompt should be surfaced (Q44).
+
+        Fires when the median softmax score over the first `min_events` events
+        drops below the AVP-derived threshold stored in the model bundle (Q45).
+        Returns False if fewer than `min_events` scores have been collected.
+        """
+        if len(event_scores) < min_events:
+            return False
+        return float(np.median(event_scores[:min_events])) < self._distribution_shift_threshold
 
     # ------------------------------------------------------------------
     # Serialization (T27, T47)
@@ -364,6 +391,7 @@ class Classifier:
             "_pca_matrix": self._pca_matrix,
             "_classes": self._classes,
             "_fitted": self._fitted,
+            "_distribution_shift_threshold": self._distribution_shift_threshold,
             "_stored_avp_X": self._stored_avp_X,
             "_stored_avp_y": self._stored_avp_y,
             "_stored_avp_subjects": self._stored_avp_subjects,
