@@ -17,9 +17,8 @@ class PipelineResult:
 
 
 def _default_detect_onsets(audio: np.ndarray) -> list[float]:
-    if len(audio) == 0:
-        return []
-    return [0.0]
+    from voxkit.dsp.onsets import OnsetDetector
+    return OnsetDetector(sample_rate=16_000).detect(audio)
 
 
 def run_pipeline(

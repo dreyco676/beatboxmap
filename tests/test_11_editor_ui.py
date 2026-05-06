@@ -360,7 +360,12 @@ def test_T13_pipeline_respects_cancel_inside_embedding_loop(fake_model, short_au
         return np.zeros(2048)
 
     fake_model.embed = slow_embed
-    result = run_pipeline(audio=short_audio, model=fake_model, cancel_flag=cancel_flag)
+    # Provide an explicit onset so the embedding loop always runs regardless
+    # of what the real OnsetDetector returns on silent test audio.
+    result = run_pipeline(
+        audio=short_audio, model=fake_model, cancel_flag=cancel_flag,
+        detect_onsets=lambda _: [0.0],
+    )
     assert result.cancelled
 
 

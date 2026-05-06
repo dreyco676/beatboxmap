@@ -208,18 +208,18 @@ def test_T06_run_pipeline_accepts_detect_onsets_kwarg():
 # T07  run_pipeline default stub behaviour
 # ---------------------------------------------------------------
 
-def test_T07_run_pipeline_default_stub_nonempty():
+def test_T07_run_pipeline_default_detector_detects_transient():
     from voxkit.ui.inference_pipeline import run_pipeline
-    audio = np.zeros(_SR, dtype=np.float32)
+    audio = _transient(t_s=1.0)
     model = _FakeModel()
     model.prepare(audio)
     result = run_pipeline(audio, model)
     assert not result.cancelled
-    # stub returns [0.0] → one event
-    assert len(result.events) == 1
+    # real OnsetDetector detects the transient → at least one event
+    assert len(result.events) >= 1
 
 
-def test_T07b_run_pipeline_default_stub_empty():
+def test_T07b_run_pipeline_default_detector_empty_audio():
     from voxkit.ui.inference_pipeline import run_pipeline
     audio = np.zeros(0, dtype=np.float32)
     model = _FakeModel()
