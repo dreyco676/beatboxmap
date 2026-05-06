@@ -7,6 +7,7 @@
 [importlinter]
 root_packages =
     voxkit
+include_external_packages = True
 
 # ---------------------------------------------------------------
 # Contract 1: only voxkit.audio.recorder may import sounddevice or
@@ -30,6 +31,10 @@ forbidden_modules =
     pyaudio
     coreaudio
     portaudio
+# voxkit.playback.engine is an accepted second audio-I/O point (click-track
+# output).  All other modules in the forbidden list must stay clean.
+ignore_imports =
+    voxkit.playback.engine -> sounddevice
 
 # ---------------------------------------------------------------
 # Contract 2: no module under voxkit.core / classifier / eval / ui

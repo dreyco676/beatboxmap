@@ -13,3 +13,5 @@ models/*.onnx
 models/*.pt
 models/*.pth
 scripts/.beats_src/
+data/avp/
+data/*.zip

@@ -10,6 +10,7 @@ Qt coupling.
 from __future__ import annotations
 
 from PySide6.QtWidgets import (
+    QComboBox,
     QDialog,
     QHBoxLayout,
     QLabel,
@@ -27,15 +28,96 @@ from voxkit.ui.editor import EditorState, build_lane_layout
 
 
 # ---------------------------------------------------------------
+# RecordingPanelWidget (Q24, Q73, Q76)
+# ---------------------------------------------------------------
+
+class RecordingPanelWidget(QWidget):
+    """Device picker + Record/Stop button wired to Recorder (Q24, Q73)."""
+
+    def __init__(
+        self,
+        recorder,
+        on_recording_stopped=None,
+        parent: QWidget | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self._recorder = recorder
+        self._on_stopped = on_recording_stopped
+        self._recording = False
+        self._setup_ui()
+        self._populate_devices()
+
+    def _setup_ui(self) -> None:
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+
+        device_row = QHBoxLayout()
+        device_row.addWidget(QLabel("Input device:"))
+        self._device_combo = QComboBox()
+        self._device_combo.currentIndexChanged.connect(self._on_device_changed)
+        device_row.addWidget(self._device_combo)
+        layout.addLayout(device_row)
+
+        self._record_btn = QPushButton("Record")
+        self._record_btn.setEnabled(False)
+        self._record_btn.clicked.connect(self._on_record_clicked)
+        layout.addWidget(self._record_btn)
+
+    def _populate_devices(self) -> None:
+        self._device_combo.clear()
+        for dev in self._recorder.list_devices():
+            self._device_combo.addItem(dev.name, dev.id)
+        self._on_device_changed()
+
+    def _on_device_changed(self) -> None:
+        has_device = self._device_combo.count() > 0
+        if not self._recording:
+            self._record_btn.setEnabled(has_device)
+
+    def _on_record_clicked(self) -> None:
+        if not self._recording:
+            device_id = self._device_combo.currentData()
+            self._recorder.open_stream(device_id)
+            self._recording = True
+            self._record_btn.setText("Stop Recording")
+            self._device_combo.setEnabled(False)
+        else:
+            self._recorder.close_stream()
+            self._recording = False
+            self._record_btn.setText("Record")
+            self._device_combo.setEnabled(True)
+            if self._on_stopped is not None:
+                self._on_stopped()
+
+    # ---- test helpers ----
+
+    def device_count(self) -> int:
+        return self._device_combo.count()
+
+    def device_names(self) -> list[str]:
+        return [self._device_combo.itemText(i) for i in range(self._device_combo.count())]
+
+    def is_record_enabled(self) -> bool:
+        return self._record_btn.isEnabled()
+
+    def record_button_text(self) -> str:
+        return self._record_btn.text()
+
+    def simulate_record_click(self) -> None:
+        self._record_btn.click()
+
+
+# ---------------------------------------------------------------
 # MainWindow
 # ---------------------------------------------------------------
 
 class MainWindow(QMainWindow):
     """Application shell."""
 
-    def __init__(self, parent: QWidget | None = None) -> None:
+    def __init__(self, recorder=None, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setWindowTitle("VoxKit")
+        self._recorder = recorder
         self._setup_ui()
 
     def _setup_ui(self) -> None:
@@ -43,9 +125,17 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(central)
         layout = QVBoxLayout(central)
 
-        self._recording_panel = QWidget()
-        self._recording_panel.setObjectName("recording_panel")
-        layout.addWidget(self._recording_panel)
+        recording_container = QWidget()
+        recording_container.setObjectName("recording_panel")
+        recording_layout = QVBoxLayout(recording_container)
+        recording_layout.setContentsMargins(0, 0, 0, 0)
+        if self._recorder is not None:
+            self._recording_panel_widget = RecordingPanelWidget(
+                recorder=self._recorder,
+                parent=recording_container,
+            )
+            recording_layout.addWidget(self._recording_panel_widget)
+        layout.addWidget(recording_container)
 
         self._editor_panel = QWidget()
         self._editor_panel.setObjectName("editor_panel")

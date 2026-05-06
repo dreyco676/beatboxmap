@@ -1,13 +1,27 @@
 <!--
 SPDX-License-Identifier: GPL-3.0-or-later
-Q83 skeleton (committed week 1 per VoxKit-spec-v0.11.md §9). Some
-sections are intentionally stubs; flesh out as the implementation lands.
+Q83 skeleton (committed week 1 per VoxKit-spec-v0.11.md §9).
 -->
 
 # Contributing to VoxKit
 
 Welcome. VoxKit is GPL v3-or-later, hobby-paced, and TDD-disciplined.
 Read this once before your first PR.
+
+## Contents
+
+- [Environment setup](#environment-setup)
+- [Running the tests](#running-the-tests)
+- [Datasets](#datasets)
+- [ONNX models](#onnx-models)
+- [SPDX license headers](#spdx-license-headers)
+- [PR checklist](#pr-checklist)
+- [TDD discipline](#tdd-discipline)
+- [Commit conventions](#commit-conventions)
+- [CI overview](#ci-overview)
+- [Where to ask questions](#where-to-ask-questions)
+
+---
 
 ## Environment setup
 
@@ -17,89 +31,242 @@ cd voxkit
 python -m venv .venv
 source .venv/bin/activate            # Windows: .venv\Scripts\activate
 
-# Install the package in editable mode plus dev tools.
-pip install -e ".[dev,audio-linux]"  # or audio-windows on Windows
+# Install the package in editable mode plus all dev tools.
+pip install -e ".[dev,audio-linux]"  # Linux
+pip install -e ".[dev,audio-windows]"  # Windows
+
+# Install git hooks (SPDX check + import-linter run on every commit).
 pre-commit install
 ```
 
-Python 3.11 or 3.12. Earlier versions are not supported.
+**Python 3.11 or 3.12 required.** Earlier versions are not supported.
+
+On Linux, sounddevice requires PortAudio:
+
+```bash
+sudo apt-get install libportaudio2   # Debian/Ubuntu
+sudo dnf install portaudio           # Fedora
+```
+
+---
 
 ## Running the tests
 
-VoxKit has three dataset tiers (spec §7.10):
+VoxKit has three dataset tiers (spec §7.10, Q85):
 
 ```bash
-# Synthetic tier — runs on every PR in CI. No external data.
+# Synthetic tier — no external data; runs in CI on every PR.
 pytest -m "not slow"
 
-# PR-validation tier — minimum-reproducible dataset.
-# Set $VOXKIT_DATASETS_DIR to point at the dataset cache.
+# PR-validation tier — needs the minimum-reproducible dataset (see below).
 pytest -m "not slow" --dataset=minimum-reproducible
 
-# Release tier — full canonical dataset. Slow.
+# Release tier — full canonical dataset. Slow; run before tagging a release.
 pytest --dataset=canonical
 ```
 
-The synthetic tier validates **pipeline integrity**, not model quality
-(Q85). A green synthetic run does NOT mean the model is good. PR-tier
-and release-tier are where quality is gated.
+> **The synthetic tier validates pipeline integrity, not model quality (Q85).**
+> A green synthetic run does not mean the model is good — it means the code
+> runs end-to-end. Model quality is gated at PR-tier and release-tier.
 
-## Obtaining datasets (PR validation and beyond)
+---
 
-> **TODO (week 2):** dataset hosting URL + checksum + ToS pointer per Q63.
-> Until then, ask in [Discussions](https://github.com/anthropics/voxkit/discussions)
-> if you want to run the PR tier locally.
+## Datasets
 
-## License expectations
+### Minimum-reproducible tier — AVP dataset
 
-- Project license: **GPL v3-or-later**.
-- Every new `.py`, `.pyx`, and `.toml` source file MUST carry an SPDX
-  header on the first line:
+The PR-validation and release tiers use the **AVP-LVT v4 dataset**
+(Acoustic Vocal Percussion Labelled Verse Takes, CC-BY-4.0).
 
-  ```python
-  # SPDX-License-Identifier: GPL-3.0-or-later
-  ```
+1. Download `AVP_Dataset.zip` from Zenodo:
+   - Record ID **5036529** (original release) or **5578744** (v4 update)
+   - URL: `https://zenodo.org/record/5036529`
 
-  CI runs `reuse lint` on every PR (Q82). Missing or wrong headers
-  block merge. Generated artifacts are exempted in `.reuse/dep5`.
+2. Place and unzip:
 
-- If your contribution depends on a new third-party model, dataset, or
-  large weight file: add a license-review memo under `docs/licenses/`
-  using the seven-field template (Q60 amended in v0.11). Pre-training
-  data license propagation is the seventh field — don't skip it.
+   ```bash
+   mkdir -p data/avp
+   cp AVP_Dataset.zip data/avp/
+   cd data/avp && unzip AVP_Dataset.zip
+   ```
+
+   Expected layout after unzip:
+
+   ```
+   data/avp/AVP_Dataset/Personal/
+     Participant_1/P1_Kick_Personal.wav
+     Participant_1/P1_Kick_Personal.csv
+     Participant_1/P1_Snare_Personal.wav
+     ...
+   ```
+
+3. Run the LOSO evaluation to verify the dataset is readable:
+
+   ```bash
+   python scripts/run_avp_loso.py --substrate panns --use-cache
+   ```
+
+   Results are written to `data/avp_loso_panns.json`.
+
+The AVP zip is excluded from git via `.gitignore`. Do not commit it.
+
+---
+
+## ONNX models
+
+The embedding extractor requires an ONNX model file in `models/`.
+These are not committed to git (too large; `.gitignore` excludes `models/*.onnx`).
+
+### PANNs CNN14
+
+```bash
+python scripts/convert_panns_to_onnx.py
+# Writes: models/panns_cnn14_16k.onnx
+```
+
+The script downloads the PANNs CNN14 checkpoint from the official source
+and converts it. Run once; the result is cached at `models/`.
+
+### BEATs (optional — substrate bake-off)
+
+```bash
+python scripts/convert_beats_to_onnx.py
+# Writes: models/beats_iter3plus_as2m.onnx
+```
+
+Required only if you want to run `--substrate beats` or `--substrate both`.
+
+---
+
+## SPDX license headers
+
+Every new `.py`, `.pyx`, `.toml`, `.yml`, and `.yaml` source file **must**
+carry an SPDX header as its first line:
+
+```python
+# SPDX-License-Identifier: GPL-3.0-or-later
+```
+
+For non-comment formats (TOML, YAML use `#`; HTML/Markdown use `<!-- -->`):
+
+```yaml
+# SPDX-License-Identifier: GPL-3.0-or-later
+```
+
+```markdown
+<!-- SPDX-License-Identifier: GPL-3.0-or-later -->
+```
+
+CI runs `reuse lint` on every push (Q82). Missing or wrong headers block
+merge. Generated artifacts that cannot carry headers are exempted in
+`.reuse/dep5`.
+
+### Third-party models and datasets
+
+If your contribution depends on a new third-party model, dataset, or large
+weight file, add a license-review memo under `docs/licenses/` using the
+seven-field template (Q60). The seventh field — pre-training data license
+propagation — is mandatory; do not omit it.
+
+---
 
 ## PR checklist
 
-- [ ] Tests pass: `pytest -m "not slow"`
-- [ ] `lint-imports` clean (Q77)
-- [ ] `reuse lint` clean (Q82)
-- [ ] No new SPDX-header drift on existing files
-- [ ] If the PR adds or changes behavior: a test came first (TDD),
-      and the commit history shows it (red → green → refactor)
-- [ ] Structural changes (Tidy First) committed separately from
-      behavioral changes — never mixed in one commit
+Before opening a PR, verify each item locally:
+
+- [ ] **Tests pass** — `pytest -m "not slow"` is fully green
+- [ ] **Import-linter clean** — `lint-imports` reports 0 broken contracts (Q77)
+- [ ] **SPDX headers clean** — `reuse lint` exits 0 (Q82)
+- [ ] **New behaviour has a test first** — commit history shows red → green →
+      refactor; the failing test landed before the implementation
+- [ ] **Structural changes are separate** — Tidy First refactors are in their
+      own commit (`tidy:` prefix), never mixed with behavioural changes
+- [ ] **No SPDX drift** — every new or renamed source file has the correct
+      header; no existing file lost its header
+
+If your PR touches the eval harness or scoring code, also bump `EVAL_VERSION`
+in `src/voxkit/eval/__init__.py` (Q41).
+
+---
 
 ## TDD discipline
 
-VoxKit follows Kent Beck's TDD methodology with Tidy First refactor
-discipline. The test files in `tests/` are the **drivers** of
-implementation, not after-the-fact verification. Read
-`tests/TDD_README.md` before adding code.
+VoxKit follows Kent Beck's TDD methodology with Tidy First refactor discipline.
+The test files in `tests/` **drive** implementation — they are not
+after-the-fact verification. Read `tests/TDD_README.md` before adding code.
 
-For each new behavior:
+For each new behaviour:
 
-1. **Red** — write the failing test first.
-2. **Green** — write the minimum implementation to pass.
-3. **Refactor** — clean up; tests stay green.
+1. **Red** — write the failing test first; run it and confirm it fails for
+   the right reason (usually `ImportError`, then `AssertionError`).
+2. **Green** — write the minimum implementation to make the test pass.
+   Resist over-engineering.
+3. **Refactor** — clean up while the tests stay green.
 
-Structural changes (extract / rename / move / inline) land in their
-own commit before the next behavioral test, prefixed `tidy:`.
-Behavioral changes land separately, prefixed `feat:` or `fix:`.
+Structural changes (extract / rename / move / inline) land in their own
+commit, prefixed `tidy:`, before the next behavioural test. Never mix
+structural and behavioural changes in one commit.
+
+---
+
+## Commit conventions
+
+```
+feat: short description of new behaviour
+fix:  short description of bug fix
+tidy: short description of structural change (no behaviour change)
+test: add or fix tests without touching production code
+docs: documentation only
+ci:   CI workflow changes
+```
+
+Examples:
+
+```
+tidy: extract _loso_macro_f1 to shared helper
+feat: add RecordingPanelWidget device picker (Q24, Q73)
+fix:  use average=None in per-class F1 to avoid binary-only error
+```
+
+Keep the first line under 72 characters. Reference spec questions (`Q77`,
+`Q83`) where relevant; they're the canonical requirement IDs.
+
+---
+
+## CI overview
+
+Every push and PR triggers two jobs (`.github/workflows/ci.yml`):
+
+| Job | What it checks |
+|-----|----------------|
+| `static-checks` | `reuse lint` (SPDX, Q82) then `lint-imports` (Q77) |
+| `tests-synthetic` | `pytest -m "not slow"` on Linux + Windows × Python 3.11/3.12 |
+
+`static-checks` runs first; `tests-synthetic` is blocked until it passes.
+
+PR-validation tier (minimum-reproducible dataset) and release tier (canonical
+dataset) are triggered manually or on tag — they need the dataset cache that
+is too large to include on every PR.
+
+To reproduce CI locally:
+
+```bash
+# Static checks
+reuse lint
+lint-imports
+
+# Synthetic-tier tests (matches CI matrix entry)
+pytest -m "not slow"
+```
+
+---
 
 ## Where to ask questions
 
-- **Discussions** for "how do I…" / "should I…" / proposing changes.
-- **Issues** for confirmed bugs and concrete tracked work.
+- **[Discussions](https://github.com/anthropics/voxkit/discussions)** — "how
+  do I…", "should I…", proposing design changes, open-ended questions.
+- **[Issues](https://github.com/anthropics/voxkit/issues)** — confirmed bugs
+  and concrete tracked work items only.
 
-Please use Discussions, not Issues, for open-ended questions. The
-Issues tracker is the project's punch list, not a forum.
+Please use Discussions, not Issues, for questions. The Issues tracker is the
+project's punch list, not a forum.

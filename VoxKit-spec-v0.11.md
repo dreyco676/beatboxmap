@@ -469,7 +469,7 @@ Velocity formula per §5.3 (logarithmic 5th/95th-percentile RMS mapping).
 
 Schema (zip-bundle .vxk):
 
-- `manifest.json` — top-level metadata including `voxkit_format_version` (Q78), session metadata (bpm, time sig, bars, sample_rate, recording_sample_rate, recording_audio_api, embedding_model_id), `bleed_gate_overridden`, `dropped_buffer_count`, calibration params reference, `softmax_threshold`, `calibration_weight`, taxonomy config reference. SPDX header (`SPDX-License-Identifier: GPL-3.0-or-later`).
+- `manifest.json` — top-level metadata including `voxkit_format_version` (Q78), session metadata (bpm, time sig, bars, sample_rate, recording_sample_rate, recording_audio_api, embedding_model_id), `bleed_gate_overridden`, `dropped_buffer_count`, calibration params reference, `softmax_threshold`, `calibration_weight`, taxonomy config reference. SPDX header (`SPDX-License-Id: GPL-3.0-or-later`).
 - `audio.wav` — recording, 32-bit float, mono.
 - `bleed_ir.npy` — current active FIR taps if present.
 - `bleed_ir_history.npz` — historical IRs keyed by `measured_at` ISO string, with two protected slots (Q49).
@@ -797,7 +797,7 @@ Notes from the panel that have shaped the current spec:
 **Phase 1 — Analysis pipeline**
 
 *Week 1:*
-- **Project license file** (`COPYING`, `LICENSE`) added to repo: GPL v3-or-later text. SPDX identifiers added to source files (`SPDX-License-Identifier: GPL-3.0-or-later`). README updated with license badge.
+- **Project license file** (`COPYING`, `LICENSE`) added to repo: GPL v3-or-later text. SPDX identifiers added to source files (`SPDX-License-Id: GPL-3.0-or-later`). README updated with license badge.
 - **License review for PANNs, BEATs, signalsmith-stretch, Rubber Band** per Q60 amended: one-page memo per dependency covering code license, weight license, commercial-use restrictions, fine-tuning rights, attribution, redistribution, **pre-training data license propagation** (the seventh field). Memos archived in `docs/licenses/`. Criterion: GPL v3 compatibility.
 - **A/B audible quality test of `signalsmith-stretch`** on a 10-clip set (Q46). If `signalsmith-stretch` passes, ship. If it fails, integrate Rubber Band as fallback.
 - **Dataset access plan** per Q63: confirm AVP and OOD redistribution rights; if confirmed, host canonical datasets on Zenodo or equivalent. Build the minimum-reproducible subset (10–20 subjects per fold). Build the synthetic dataset generator and commit to repo.
@@ -1096,7 +1096,7 @@ def load_session(path: Path) -> Session:
 `migrate_0_10_to_0_11_stamp_version` is a no-op on data, only setting `voxkit_format_version: "0.11"` and (if missing) populating the field on legacy bundles. The Cholesky conversion remains in `migrate_0_9_to_0_10_cholesky`.
 
 **File format (zip-bundle .vxk):**
-- `manifest.json` — metadata including `voxkit_format_version`, `recording_audio_api`, `dropped_buffer_count`, taxonomy config reference. SPDX header (`SPDX-License-Identifier: GPL-3.0-or-later`).
+- `manifest.json` — metadata including `voxkit_format_version`, `recording_audio_api`, `dropped_buffer_count`, taxonomy config reference. SPDX header (`SPDX-License-Id: GPL-3.0-or-later`).
 - `audio.wav` — recording, 32-bit float, mono.
 - `bleed_ir.npy` — current active FIR taps if present.
 - `bleed_ir_history.npz` — historical IRs keyed by `measured_at` ISO string, with two protected slots.

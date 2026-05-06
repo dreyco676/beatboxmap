@@ -58,6 +58,18 @@ TourOverlayWidget (Q54 — wires first-run tour state to PySide6)
   T28  Overlay hidden when tour_completed=True from the start
   T29  Overlay becomes visible after notify_event("unknown") (tour not done)
   T30  Clicking "Got it" hides overlay and marks tour complete
+
+RecordingPanelWidget (Q24, Q73, Q76 — audio device → MainWindow wiring)
+  T31  RecordingPanelWidget constructs with a fake recorder
+  T32  Device picker is populated from recorder.list_devices()
+  T33  Record button is disabled when recorder returns no devices
+  T34  Record button is enabled when at least one device is available
+  T35  Clicking Record calls recorder.open_stream(selected_device_id)
+  T36  Record button text changes to "Stop Recording" after recording starts
+  T37  Clicking Stop calls recorder.close_stream()
+  T38  Stopping recording invokes on_recording_stopped callback
+  T39  MainWindow created with a recorder has RecordingPanelWidget in the panel
+  T40  Device picker shows exactly what recorder.list_devices() returns
 """
 
 from __future__ import annotations
@@ -384,3 +396,117 @@ def test_T30_tour_overlay_dismiss_hides_and_completes_tour(qapp):
     overlay.simulate_dismiss()
     assert not overlay.is_shown()
     assert state.tour_active is False
+
+
+# ---------------------------------------------------------------
+# Fake recorder for wiring tests (no real audio hardware needed)
+# ---------------------------------------------------------------
+
+class _FakeRecorder:
+    """Minimal recorder stand-in; records calls without opening a stream."""
+
+    def __init__(self, devices=None) -> None:
+        from voxkit.audio.recorder import DeviceInfo
+        self._devices = devices if devices is not None else [
+            DeviceInfo(id="0", name="USB Mic", default_rate=16_000),
+            DeviceInfo(id="1", name="Built-in Mic", default_rate=44_100),
+        ]
+        self.open_stream_calls: list[str] = []
+        self.close_stream_calls: int = 0
+
+    def list_devices(self):
+        return list(self._devices)
+
+    def open_stream(self, device_id: str) -> None:
+        self.open_stream_calls.append(device_id)
+
+    def close_stream(self) -> None:
+        self.close_stream_calls += 1
+
+
+# ---------------------------------------------------------------
+# RecordingPanelWidget (T31-T40)
+# ---------------------------------------------------------------
+
+def test_T31_recording_panel_constructs(qapp):
+    from voxkit.ui.qt_widgets import RecordingPanelWidget
+    rec = _FakeRecorder()
+    w = RecordingPanelWidget(recorder=rec)
+    assert w is not None
+
+
+def test_T32_device_picker_populated_from_recorder(qapp):
+    from voxkit.ui.qt_widgets import RecordingPanelWidget
+    rec = _FakeRecorder()
+    w = RecordingPanelWidget(recorder=rec)
+    assert w.device_count() == 2
+    assert "USB Mic" in w.device_names()
+    assert "Built-in Mic" in w.device_names()
+
+
+def test_T33_record_button_disabled_when_no_devices(qapp):
+    from voxkit.ui.qt_widgets import RecordingPanelWidget
+    rec = _FakeRecorder(devices=[])
+    w = RecordingPanelWidget(recorder=rec)
+    assert not w.is_record_enabled()
+
+
+def test_T34_record_button_enabled_when_device_available(qapp):
+    from voxkit.ui.qt_widgets import RecordingPanelWidget
+    rec = _FakeRecorder()
+    w = RecordingPanelWidget(recorder=rec)
+    assert w.is_record_enabled()
+
+
+def test_T35_record_click_opens_stream_with_selected_device(qapp):
+    from voxkit.ui.qt_widgets import RecordingPanelWidget
+    rec = _FakeRecorder()
+    w = RecordingPanelWidget(recorder=rec)
+    w.simulate_record_click()
+    assert rec.open_stream_calls == ["0"]
+
+
+def test_T36_record_button_text_changes_to_stop(qapp):
+    from voxkit.ui.qt_widgets import RecordingPanelWidget
+    rec = _FakeRecorder()
+    w = RecordingPanelWidget(recorder=rec)
+    w.simulate_record_click()
+    assert "Stop" in w.record_button_text()
+
+
+def test_T37_stop_click_closes_stream(qapp):
+    from voxkit.ui.qt_widgets import RecordingPanelWidget
+    rec = _FakeRecorder()
+    w = RecordingPanelWidget(recorder=rec)
+    w.simulate_record_click()   # start
+    w.simulate_record_click()   # stop
+    assert rec.close_stream_calls == 1
+
+
+def test_T38_stop_invokes_callback(qapp):
+    from voxkit.ui.qt_widgets import RecordingPanelWidget
+    rec = _FakeRecorder()
+    fired: list = []
+    w = RecordingPanelWidget(recorder=rec, on_recording_stopped=lambda: fired.append(1))
+    w.simulate_record_click()   # start
+    w.simulate_record_click()   # stop
+    assert len(fired) == 1
+
+
+def test_T39_main_window_with_recorder_has_recording_panel_widget(qapp):
+    from voxkit.ui.qt_widgets import MainWindow, RecordingPanelWidget
+    rec = _FakeRecorder()
+    w = MainWindow(recorder=rec)
+    rp = w.findChild(RecordingPanelWidget)
+    assert rp is not None, "RecordingPanelWidget not found inside MainWindow"
+    w.close()
+
+
+def test_T40_device_picker_shows_only_recorder_list(qapp):
+    from voxkit.audio.recorder import DeviceInfo
+    from voxkit.ui.qt_widgets import RecordingPanelWidget
+    devices = [DeviceInfo(id="5", name="Focusrite 2i2", default_rate=48_000)]
+    rec = _FakeRecorder(devices=devices)
+    w = RecordingPanelWidget(recorder=rec)
+    assert w.device_count() == 1
+    assert w.device_names() == ["Focusrite 2i2"]
