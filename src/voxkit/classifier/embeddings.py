@@ -94,6 +94,20 @@ def _validate_session_schema(session, substrate_id: str) -> None:
 class EmbeddingExtractor:
     required_sample_rate: int = _REQUIRED_SAMPLE_RATE
 
+    _DEFAULT_MODEL_FILES: dict[str, str] = {
+        "panns_cnn14": "panns_cnn14_16k.onnx",
+        "beats": "beats_iter3plus_as2m.onnx",
+    }
+
+    @classmethod
+    def from_default(cls, substrate_id: str) -> "EmbeddingExtractor":
+        """Create an EmbeddingExtractor using the standard model path for the given substrate."""
+        if substrate_id not in cls._DEFAULT_MODEL_FILES:
+            raise ValueError(f"Unknown substrate: {substrate_id!r}")
+        repo_root = Path(__file__).parent.parent.parent.parent
+        model_path = repo_root / "models" / cls._DEFAULT_MODEL_FILES[substrate_id]
+        return cls(model_path, substrate_id)
+
     def __init__(self, onnx_path: Path, substrate_id: str) -> None:
         onnx_path = Path(onnx_path)
         if not onnx_path.exists():
