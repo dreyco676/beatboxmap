@@ -630,6 +630,39 @@ def test_T34_empty_calibration_equals_plain_fit():
     np.testing.assert_allclose(plain.class_centroids_full_dim, cal.class_centroids_full_dim, atol=1e-10)
 
 
+def test_lr_head_uses_calibration_samples_with_elevated_weight():
+    """Q26, §5.6: calibration embeddings must influence the LR head.
+
+    Places calibration samples far from all AVP centroids in the direction
+    of one class axis; a high calibration_weight must shift LR coefficients
+    measurably compared to the no-calibration baseline.
+    """
+    from voxkit.classifier.classifier import Classifier
+    rng = np.random.default_rng(99)
+    X, y, subjects, centroids = _synth_avp(seed=99)
+    D = X.shape[1]
+
+    # Calibration: 8 samples for class_0, placed far outside the AVP cloud.
+    cal_direction = np.zeros(D, dtype=np.float32)
+    cal_direction[0] = 200.0
+    cal_X = (centroids[0] + cal_direction + rng.standard_normal((8, D)) * 0.1).astype(np.float32)
+    cal_y = np.array(["class_0"] * 8)
+
+    clf_no_cal = Classifier.untrained(taxonomy=None, embedding_dim=D)
+    clf_no_cal.fit(avp_embeddings=X, avp_labels=y, avp_subjects=subjects)
+
+    clf_cal = Classifier.untrained(taxonomy=None, embedding_dim=D)
+    clf_cal.fit_with_calibration(
+        X, y, subjects, cal_X, cal_y, calibration_weight=50.0,
+    )
+
+    drift = np.linalg.norm(clf_cal.lr_coefficients_ - clf_no_cal.lr_coefficients_)
+    assert drift > 0.0, (
+        "LR coefficients unchanged after adding calibration samples with weight=50; "
+        "calibration data is not reaching the LR head fit (Q26 / §5.6)"
+    )
+
+
 # ---------------------------------------------------------------
 # Self-test overfit guard (Q71)
 # ---------------------------------------------------------------

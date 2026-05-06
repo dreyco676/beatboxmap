@@ -73,14 +73,20 @@ def fit_lr_head(
     *,
     indices: list[int] | None = None,
     groups: np.ndarray | None = None,
+    X_fit: np.ndarray | None = None,
+    y_fit: np.ndarray | None = None,
+    sample_weight: np.ndarray | None = None,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Fit a logistic regression head; return (coefficients, intercepts).
 
-    Selects C ∈ {10, 1, 0.1, 0.01} via 3-fold CV (accuracy). When `groups`
-    (subject IDs) are provided and there are ≥ 3 unique groups, inner CV folds
-    are subject-disjoint (GroupKFold), so C is selected for cross-subject
-    generalisation rather than within-subject performance. Cs are tried
-    largest-first so ties break in favour of less regularisation.
+    C ∈ {10, 1, 0.1, 0.01} is selected via 3-fold CV on (X_train, y_train)
+    (AVP LR-split only). When `groups` (subject IDs) are provided and there
+    are ≥ 3 unique groups, inner CV folds are subject-disjoint (GroupKFold).
+    Cs are tried largest-first so ties break in favour of less regularisation.
+
+    X_fit / y_fit / sample_weight: when provided, the final fit uses these
+    instead of X_train / y_train, so calibration samples can be included with
+    elevated weight (Q26, §5.6) without leaking into C-selection folds.
     """
     from sklearn.linear_model import LogisticRegression
     from sklearn.model_selection import GroupKFold, cross_val_score
@@ -101,10 +107,12 @@ def fit_lr_head(
             best_score = scores.mean()
             best_c = C
 
+    X_final = X_fit if X_fit is not None else X_train
+    y_final = y_fit if y_fit is not None else y_train
     lr_final = LogisticRegression(
         C=best_c, solver="saga", penalty="l2", max_iter=5000, random_state=0
     )
-    lr_final.fit(X_train, y_train)
+    lr_final.fit(X_final, y_final, sample_weight=sample_weight)
     return lr_final.coef_, lr_final.intercept_
 
 

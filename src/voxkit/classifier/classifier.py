@@ -151,8 +151,33 @@ class Classifier:
             X_lr_head = X_lr
             X_t_head = X_t
 
-        # LR head — pass subject IDs so inner CV uses subject-disjoint folds
-        coef, intercept = fit_lr_head(X_lr_head, y_lr, indices=lr_idx, groups=s_lr)
+        # Augment LR final fit with calibration samples (Q26, §5.6).
+        # C-selection CV uses AVP data only — calibration samples have no
+        # subject IDs for GroupKFold and must not leak into held-out folds.
+        if len(calibration_labels) > 0 and calibration_weight > 0.0:
+            cal_head = (
+                calibration_embeddings @ pca_matrix.T
+                if pca_matrix is not None
+                else calibration_embeddings
+            )
+            X_lr_aug = np.vstack([X_lr_head, cal_head.astype(X_lr_head.dtype)])
+            y_lr_aug = np.concatenate([y_lr, calibration_labels])
+            w_avp = np.ones(len(X_lr_head), dtype=np.float64)
+            w_cal = np.full(len(cal_head), calibration_weight, dtype=np.float64)
+            lr_sample_weight: np.ndarray | None = np.concatenate([w_avp, w_cal])
+        else:
+            X_lr_aug = None
+            y_lr_aug = None
+            lr_sample_weight = None
+
+        # LR head — C selected on AVP only; final fit includes calibration.
+        coef, intercept = fit_lr_head(
+            X_lr_head, y_lr,
+            indices=lr_idx, groups=s_lr,
+            X_fit=X_lr_aug,
+            y_fit=y_lr_aug,
+            sample_weight=lr_sample_weight,
+        )
         self.lr_coefficients_ = coef
         self._lr_intercepts = intercept
 
