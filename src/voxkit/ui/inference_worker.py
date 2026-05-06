@@ -37,9 +37,10 @@ class InferenceWorker:
         cancelled()          — emitted instead of completed/failed after cancel
     """
 
-    def __init__(self, audio: np.ndarray, model) -> None:
+    def __init__(self, audio: np.ndarray, model, *, onset_detector=None) -> None:
         self._audio = audio
         self._model = model
+        self._onset_detector = onset_detector
         self._cancel_flag = threading.Event()
         self._done = threading.Event()
         self._thread: threading.Thread | None = None
@@ -55,6 +56,8 @@ class InferenceWorker:
     # ------------------------------------------------------------------
 
     def _detect_onsets(self, audio: np.ndarray) -> list[float]:
+        if self._onset_detector is not None:
+            return self._onset_detector.detect(audio)
         if len(audio) == 0:
             return []
         return [0.0]

@@ -29,6 +29,7 @@ def run_pipeline(
     on_phase=None,
     on_progress=None,
     cancel_flag: threading.Event | None = None,
+    detect_onsets=None,
 ) -> PipelineResult:
     """Run the three-phase inference pipeline and return a PipelineResult.
 
@@ -48,7 +49,7 @@ def run_pipeline(
         return PipelineResult(events=[], cancelled=True, audio=audio)
 
     _notify("onset")
-    onsets = _default_detect_onsets(audio)
+    onsets = detect_onsets(audio) if detect_onsets is not None else _default_detect_onsets(audio)
 
     if _cancelled():
         return PipelineResult(events=[], cancelled=True, audio=audio)
