@@ -10,7 +10,7 @@ Beatbox, tap, or clap into a microphone. VoxKit finds every hit, figures out whe
 
 Recording goes through three stages:
 
-**1. Onset detection** — VoxKit listens for transients in the audio. It uses a 5 ms energy frame analysis with a noise gate (so background hiss doesn't trigger false hits) and a click-guard (so the metronome doesn't show up as drum hits).
+**1. Onset detection** — VoxKit listens for transients in the audio. A small neural network (trained on the AVP Personal beatboxing corpus and running locally via ONNX) finds each hit with sub-millisecond timing precision. A noise gate suppresses background hiss and a click-guard stops the metronome from showing up as drum hits.
 
 **2. Classification** — Each detected hit is passed through a neural audio encoder (BEATs iter3+, running locally via ONNX) that converts the sound into a compact representation. A lightweight classifier — trained on your own voice during calibration — maps that representation to one of the four drum classes. Hits that don't match any of your calibration samples are flagged as "unknown" rather than forced into a wrong category.
 

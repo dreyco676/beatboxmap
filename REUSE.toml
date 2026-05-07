@@ -45,6 +45,14 @@ SPDX-FileCopyrightText = "VoxKit contributors"
 SPDX-License-Identifier = "GPL-3.0-or-later"
 
 # ---------------------------------------------------------------
+# Trained ONNX model files (project-authored weights)
+# ---------------------------------------------------------------
+[[annotations]]
+path = ["models/*.onnx"]
+SPDX-FileCopyrightText = "VoxKit contributors"
+SPDX-License-Identifier = "GPL-3.0-or-later"
+
+# ---------------------------------------------------------------
 # AVP dataset — third-party, CC-BY-4.0
 # Downloaded from Zenodo 5036529/5578744; not committed to git.
 # See CONTRIBUTING.md §Datasets.

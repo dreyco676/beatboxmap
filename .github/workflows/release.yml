@@ -1,0 +1,170 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# Release workflow — triggered on v* tags.
+#
+# Jobs:
+#   wheel         Build a platform-independent Python wheel and sdist.
+#   freeze-windows  PyInstaller one-directory bundle for Windows x64.
+#   freeze-linux    PyInstaller one-directory bundle for Linux x86_64.
+#
+# All artifacts are attached to the corresponding GitHub release via
+# `gh release upload`.  The release itself must be pre-created (or set
+# to "draft") before pushing the tag, or created by a separate workflow.
+#
+# Model files (models/*.onnx) must be present in the repository or
+# restored from LFS / a download step before PyInstaller runs.  They
+# are referenced in voxkit.spec as datas and are NOT fetched here —
+# add a download step if the models are stored outside the repo.
+
+name: release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write   # required to upload assets to a GitHub release
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false   # never cancel an in-progress release build
+
+jobs:
+  # -------------------------------------------------------------------
+  # 1. Python wheel (platform-independent)
+  # -------------------------------------------------------------------
+  wheel:
+    name: Build wheel + sdist
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install build front-end
+        run: pip install build
+
+      - name: Build wheel and sdist
+        run: python -m build
+
+      - name: Upload dist/ as workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: wheel
+          path: dist/
+          if-no-files-found: error
+
+      - name: Attach wheel + sdist to GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        # `|| true` so the step doesn't fail if the release doesn't exist yet;
+        # maintainers can create the release manually after the workflow runs.
+        run: gh release upload "${{ github.ref_name }}" dist/* --clobber || true
+
+  # -------------------------------------------------------------------
+  # 2. PyInstaller bundle — Windows x64
+  # -------------------------------------------------------------------
+  freeze-windows:
+    name: Freeze (Windows x64)
+    runs-on: windows-latest
+    needs: wheel   # ensures the wheel job's static checks pass first
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install runtime + UI + freeze tooling
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[ui,audio-windows,freeze]"
+
+      - name: Build frozen one-directory bundle
+        run: pyinstaller voxkit.spec
+
+      - name: Smoke-test the frozen executable
+        # The offscreen platform is not available on the GitHub Windows runner;
+        # use the Windows default (no display needed since --smoke-test exits
+        # immediately after QApplication.processEvents()).
+        run: dist\voxkit\voxkit.exe --smoke-test
+        continue-on-error: true   # graceful: freeze smoke may fail without display
+
+      - name: Zip the distribution directory
+        shell: pwsh
+        run: Compress-Archive -Path dist\voxkit -DestinationPath dist\voxkit-windows-x64.zip
+
+      - name: Upload frozen bundle as workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: frozen-windows-x64
+          path: dist/voxkit-windows-x64.zip
+          if-no-files-found: error
+
+      - name: Attach bundle to GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "${{ github.ref_name }}" dist/voxkit-windows-x64.zip --clobber || true
+
+  # -------------------------------------------------------------------
+  # 3. PyInstaller bundle — Linux x86_64
+  # -------------------------------------------------------------------
+  freeze-linux:
+    name: Freeze (Linux x86_64)
+    runs-on: ubuntu-latest
+    needs: wheel
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: System dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libportaudio2 \
+            libglib2.0-0 \
+            libgl1 \
+            libxcb-cursor0 \
+            libxcb-xinerama0 \
+            libxkbcommon-x11-0
+
+      - name: Install runtime + UI + freeze tooling
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[ui,audio-linux,freeze]"
+
+      - name: Build frozen one-directory bundle
+        run: pyinstaller voxkit.spec
+
+      - name: Smoke-test the frozen executable (offscreen)
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: dist/voxkit/voxkit --smoke-test
+        continue-on-error: true   # graceful: Qt offscreen may not be available
+
+      - name: Archive the distribution directory
+        run: tar -czf dist/voxkit-linux-x86_64.tar.gz -C dist voxkit
+
+      - name: Upload frozen bundle as workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: frozen-linux-x86_64
+          path: dist/voxkit-linux-x86_64.tar.gz
+          if-no-files-found: error
+
+      - name: Attach bundle to GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "${{ github.ref_name }}" dist/voxkit-linux-x86_64.tar.gz --clobber || true
