@@ -151,11 +151,26 @@ class MainWindow(QMainWindow):
         central = QWidget()
         self.setCentralWidget(central)
         root = QVBoxLayout(central)
-        root.setSpacing(8)
+        root.setSpacing(4)
+        root.setContentsMargins(6, 4, 6, 6)
 
-        # ---- status bar (top) ----
+        # ── Winamp-style LCD header ────────────────────────────────────
+        header = QWidget()
+        header.setStyleSheet("background-color: #001200; border: 1px solid #111111;")
+        hlayout = QVBoxLayout(header)
+        hlayout.setContentsMargins(6, 4, 6, 4)
+        hlayout.setSpacing(2)
+
+        title_lbl = QLabel("♪ VOXKIT")
+        title_lbl.setObjectName("lcd_title")
+        hlayout.addWidget(title_lbl)
+
         self._status_label = QLabel("Loading model…")
-        root.addWidget(self._status_label)
+        self._status_label.setObjectName("lcd")
+        self._status_label.setWordWrap(True)
+        hlayout.addWidget(self._status_label)
+
+        root.addWidget(header)
 
         # ---- controls row ----
         ctrl = QHBoxLayout()
@@ -648,12 +663,13 @@ class EventsViewWidget(QWidget):
     _ROW_HEIGHT = 26
     _LABEL_W = 110
     _DOT_R = 6
+    # Winamp spectrum-analyser palette: bright neons on near-black
     _CLASS_COLORS: dict[str, tuple[int, int, int]] = {
-        "kick":        (220, 80,  80),
-        "snare":       (80,  180, 140),
-        "closed_hat":  (80,  160, 210),
-        "open_hat":    (150, 210, 130),
-        "unknown":     (160, 160, 160),
+        "kick":        (0,   220, 0),    # bright green  (like Winamp peak bars)
+        "snare":       (0,   200, 220),  # cyan
+        "closed_hat":  (220, 200, 0),    # yellow
+        "open_hat":    (220, 120, 0),    # orange
+        "unknown":     (100, 100, 100),  # dim gray
     }
 
     def __init__(self, parent: QWidget | None = None) -> None:
@@ -687,13 +703,14 @@ class EventsViewWidget(QWidget):
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         w, h = self.width(), self.height()
 
-        painter.fillRect(0, 0, w, h, QColor(22, 22, 28))
+        # Winamp LCD background — near-black green
+        painter.fillRect(0, 0, w, h, QColor(0, 14, 0))
 
         if not self._events:
-            painter.setPen(QColor(100, 100, 110))
+            painter.setPen(QColor(0, 100, 0))
             painter.drawText(
                 0, 0, w, h, Qt.AlignmentFlag.AlignCenter,
-                "Record a beat to see events here",
+                "RECORD A BEAT TO SEE EVENTS HERE",
             )
             return
 
@@ -701,21 +718,26 @@ class EventsViewWidget(QWidget):
         timeline_w = max(1, w - self._LABEL_W - 12)
         top_pad = 12
 
+        beat_count = self._bars * 4
+
         for row, cls in enumerate(self._classes):
             y = top_pad + row * self._ROW_HEIGHT
-            bg = QColor(32, 32, 40) if row % 2 == 0 else QColor(26, 26, 34)
+            # Alternating very-dark rows (LCD scanline effect)
+            bg = QColor(0, 18, 0) if row % 2 == 0 else QColor(0, 12, 0)
             painter.fillRect(self._LABEL_W, y, timeline_w, self._ROW_HEIGHT, bg)
 
-            painter.setPen(QColor(180, 180, 195))
+            # Class label in dim green monospace
+            painter.setPen(QColor(0, 140, 0))
             painter.drawText(
                 QRectF(4, y, self._LABEL_W - 8, self._ROW_HEIGHT),
                 Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter,
-                cls.replace("_", " "),
+                cls.replace("_", " ").upper(),
             )
 
-            r, g, b = self._CLASS_COLORS.get(cls, (180, 180, 180))
+            r, g, b = self._CLASS_COLORS.get(cls, (0, 180, 0))
             fill = QColor(r, g, b)
-            border = QColor(max(0, r - 60), max(0, g - 60), max(0, b - 60))
+            # Inner glow: slightly dimmer version of the same hue
+            glow = QColor(r // 3, g // 3, b // 3)
             cy = y + self._ROW_HEIGHT / 2.0
 
             for ev in self._events:
@@ -724,15 +746,19 @@ class EventsViewWidget(QWidget):
                 frac = ev.t / duration if duration > 0 else 0.0
                 frac = max(0.0, min(1.0, frac))
                 x = self._LABEL_W + frac * timeline_w
+                # Outer glow ring
+                painter.setBrush(glow)
+                painter.setPen(Qt.PenStyle.NoPen)
+                painter.drawEllipse(QPointF(x, cy), self._DOT_R + 2, self._DOT_R + 2)
+                # Bright centre dot
                 painter.setBrush(fill)
-                painter.setPen(border)
                 painter.drawEllipse(QPointF(x, cy), self._DOT_R, self._DOT_R)
 
-        # Beat grid lines
-        beat_count = self._bars * 4
-        painter.setPen(QColor(50, 50, 60))
+        # Beat grid — dim green verticals, brighter on bar boundaries
         for b in range(beat_count + 1):
             x = self._LABEL_W + int(b / beat_count * timeline_w)
+            on_bar = (b % 4 == 0)
+            painter.setPen(QColor(0, 60, 0) if on_bar else QColor(0, 35, 0))
             painter.drawLine(x, top_pad, x, top_pad + len(self._classes) * self._ROW_HEIGHT)
 
     # ---- test helpers ----

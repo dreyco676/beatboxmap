@@ -41,6 +41,9 @@ def main(argv: list[str] | None = None) -> int:
 
     app = QApplication.instance() or QApplication(sys.argv[:1])
 
+    from voxkit.ui.style import WINAMP_QSS
+    app.setStyleSheet(WINAMP_QSS)
+
     from voxkit.ui.qt_widgets import MainWindow
     window = MainWindow()
     window.show()
