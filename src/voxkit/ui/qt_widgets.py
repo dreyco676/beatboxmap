@@ -779,7 +779,7 @@ class CalibrationWizardDialog(QDialog):
     """
 
     _SAMPLES_REQUIRED = 3
-    _RECORD_SECONDS = 1.5
+    _RECORD_SECONDS = 1.0
     _SAMPLE_RATE = 16_000
 
     def __init__(
@@ -865,8 +865,9 @@ class CalibrationWizardDialog(QDialog):
             f"Step {self._current_idx + 1} / {total}: {cls.replace('_', ' ')}"
         )
         self._instruction_label.setText(
-            f"Say or tap your {cls.replace('_', ' ')} {self._SAMPLES_REQUIRED} times.\n"
-            f"Click the button below to record each {self._RECORD_SECONDS:.0f}-second snippet."
+            f"Click Record, then make ONE {cls.replace('_', ' ')} sound near the middle "
+            f"of the {self._RECORD_SECONDS:.1f}-second clip.\n"
+            f"Repeat {self._SAMPLES_REQUIRED} times (one sound per click)."
         )
         dots = "● " * n + "○ " * (self._SAMPLES_REQUIRED - n)
         self._progress_label.setText(f"Samples: {dots.strip()}")
@@ -918,7 +919,13 @@ class CalibrationWizardDialog(QDialog):
         is_last = self._current_idx == len(self._classes) - 1
         if is_last:
             try:
-                self._flow.commit()
+                import numpy as np
+                cal_emb, cal_labels = self._flow._session.get_embeddings_and_labels()
+                # No AVP pre-training in user-testing mode: use calibration samples
+                # directly as training data. One synthetic subject per sample so
+                # the LOSO split holds out only one sample rather than a whole class.
+                subjects = np.arange(len(cal_labels))
+                self._classifier.fit(cal_emb.astype(np.float32), cal_labels, subjects)
                 self.accept()
             except Exception as exc:
                 self._error_label.setText(f"Calibration failed: {exc}")
