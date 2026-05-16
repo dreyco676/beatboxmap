@@ -128,6 +128,11 @@ AUDIO_CALLBACK_PATH (Q67)
        path, not active in v1.0). Must be a class attribute, not an
        instance attribute, so it is inspectable without constructing a
        Recorder.
+  T35  The recorder module docstring contains the three required contract
+       terms from Q67: the active path name ("python_default"), the GIL
+       budget ("50"), and the CFFI escalation path ("cffi"). A contributor
+       who opens recorder.py must be able to read the callback contract
+       without consulting the spec.
 
 ============================================================
 WEAK CONSENSUS / OPEN QUESTIONS (carry from v0.11 + v0.12)
@@ -663,3 +668,23 @@ def test_T30_int16_device_input_normalized_to_float32():
     assert pulled.dtype == np.float32
     # 16384 / 32768 ≈ 0.5
     assert abs(float(pulled.mean()) - 0.5) < 0.01
+
+
+def test_T35_module_docstring_contains_gil_contract_terms():
+    """Q67: the module docstring at the top of recorder.py is the in-tree
+    home of the GIL contract. A contributor must be able to read the
+    active callback path, the GIL budget, and the CFFI escalation path
+    without consulting the spec document."""
+    import voxkit.audio.recorder as _rec_mod
+    doc = _rec_mod.__doc__ or ""
+    doc_lower = doc.lower()
+
+    assert "python_default" in doc_lower, (
+        "Module docstring must name the active path ('python_default')"
+    )
+    assert "50" in doc, (
+        "Module docstring must state the GIL budget (< 50 µs)"
+    )
+    assert "cffi" in doc_lower, (
+        "Module docstring must document the CFFI escalation path"
+    )

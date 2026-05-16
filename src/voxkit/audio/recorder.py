@@ -1,5 +1,27 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""Recorder: audio capture, resampler worker, callback contract (Q67, Q76, Q77)."""
+"""Recorder: audio capture, resampler worker, callback contract (Q67, Q76, Q77).
+
+GIL contract (Q67)
+------------------
+Active path: ``python_default`` — a standard Python sounddevice callback that
+copies each buffer into a pre-allocated NumPy ring slot.  GIL is held for
+< 50 µs/call at typical 5–10 ms buffer sizes on the reference CPU (the
+NumPy __setitem__ memcpy releases the GIL for the bulk copy; only the
+index arithmetic and atomic-counter increment hold it).
+
+Escalation path: ``cffi_hardened`` — a sounddevice RawInputStream with a
+CFFI-level callback that never touches the Python interpreter.  Activate
+when the ``python_default`` path measurably drops buffers under load.
+v1.0 ships ``python_default``; the escalation path is documented but not
+wired.  The active path is also readable at runtime via
+``Recorder.AUDIO_CALLBACK_PATH``.
+
+Callback invariants (enforced by test_02_recorder.py):
+- Only operations in the callback: ``ring.try_push(buf)`` and atomic
+  increment of ``dropped_buffers`` on push failure.
+- No heap allocation, no logging, no system calls in the hot path.
+- Exceptions are swallowed silently; the thread is never allowed to raise.
+"""
 
 from __future__ import annotations
 
