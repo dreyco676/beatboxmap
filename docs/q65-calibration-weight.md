@@ -1,3 +1,6 @@
+<!-- SPDX-FileCopyrightText: 2026 John Hogue -->
+<!-- SPDX-License-Identifier: CC-BY-4.0 -->
+
 # Q65 — Calibration-Weight Empirical Justification Memo
 
 **Spec ref:** Q42, Q65  

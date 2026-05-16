@@ -1,3 +1,6 @@
+<!-- SPDX-FileCopyrightText: 2026 John Hogue -->
+<!-- SPDX-License-Identifier: CC-BY-4.0 -->
+
 # Q64 — Release-Gate Threshold Justification Memo
 
 **Spec ref:** Q64, Q19, Q50, Q70  

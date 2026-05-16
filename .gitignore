@@ -16,3 +16,4 @@ models/*.pth
 scripts/.beats_src/
 data/avp/
 data/*.zip
+.claude/settings.local.json
