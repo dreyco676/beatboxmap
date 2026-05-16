@@ -254,6 +254,10 @@ def build_callback(
 # ---------------------------------------------------------------
 
 class Recorder:
+    # Q67: v1.0 ships the Python-callback path. "cffi_hardened" is the
+    # documented escalation when the default path measurably drops buffers.
+    AUDIO_CALLBACK_PATH: str = "python_default"
+
     def __init__(self) -> None:
         self._stream = None
         self._worker_thread: threading.Thread | None = None

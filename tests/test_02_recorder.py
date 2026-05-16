@@ -122,6 +122,13 @@ Tightening of v0.11 panel additions
        dependent. v0.12 tightens to a RATIO test against a no-callback
        baseline so it doesn't flake on slow CI runners.
 
+AUDIO_CALLBACK_PATH (Q67)
+  T34  Recorder.AUDIO_CALLBACK_PATH is "python_default" (v1.0 ships the
+       Python-callback path; "cffi_hardened" is the documented escalation
+       path, not active in v1.0). Must be a class attribute, not an
+       instance attribute, so it is inspectable without constructing a
+       Recorder.
+
 ============================================================
 WEAK CONSENSUS / OPEN QUESTIONS (carry from v0.11 + v0.12)
 ============================================================
@@ -623,6 +630,20 @@ def test_T33_open_close_open_cycle_is_clean():
         leaked = [t for t in (set(threading.enumerate()) - baseline_threads)
                   if t.is_alive()]
         assert leaked == [], f"open/close/open/close leaked threads: {leaked}"
+
+
+def test_T34_audio_callback_path_is_python_default():
+    """Q67: v1.0 ships the Python-callback path. The class attribute must
+    be inspectable without constructing a Recorder instance, and its value
+    must be one of the two documented literals."""
+    from voxkit.audio.recorder import Recorder
+    assert hasattr(Recorder, "AUDIO_CALLBACK_PATH"), (
+        "Recorder.AUDIO_CALLBACK_PATH class attribute is missing"
+    )
+    assert Recorder.AUDIO_CALLBACK_PATH == "python_default", (
+        f"Expected 'python_default', got {Recorder.AUDIO_CALLBACK_PATH!r}"
+    )
+    assert Recorder.AUDIO_CALLBACK_PATH in {"python_default", "cffi_hardened"}
 
 
 def test_T30_int16_device_input_normalized_to_float32():
