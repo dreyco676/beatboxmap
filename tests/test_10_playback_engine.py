@@ -143,6 +143,13 @@ Tightening of v0.11 panel additions
 WEAK CONSENSUS / OPEN QUESTIONS (carry from v0.11 + v0.12)
 ============================================================
 
+Variable playback speed / time-stretch (Q9, Q46)
+  T40  set_speed(1.0) is the default; total_duration_seconds is unchanged
+  T41  set_speed(2.0) halves total_duration_seconds (audio plays twice as fast
+       at preserved pitch)
+  T42  set_speed(0.5) doubles total_duration_seconds (half speed, same pitch)
+  T43  set_speed outside [0.5, 2.0] raises ValueError
+
 OQ-1  Output device hot-swap (user changes Windows default mid-playback).
       Surface as PlaybackError + auto-stop, or attempt re-open?
 OQ-2  Editor playhead callback API (above).
@@ -674,3 +681,46 @@ def test_T39_render_after_replace_audio_no_oob_no_garbage():
             assert out.shape == (1024,)
             assert np.all(np.isfinite(out)), "render returned non-finite samples"
             assert np.all(np.abs(out) <= 1.0 + 1e-6), "render returned out-of-range samples"
+
+
+# ---------------------------------------------------------------
+# Variable playback speed / time-stretch (Q9, Q46)
+# ---------------------------------------------------------------
+
+def test_T40_set_speed_default_is_1_and_duration_unchanged():
+    """Q9: default speed is 1.0; total_duration_seconds must not change."""
+    from voxkit.playback.engine import PlaybackEngine
+    eng = PlaybackEngine(session=_make_session(duration_s=2.0))
+    original_dur = eng.total_duration_seconds
+    eng.set_speed(1.0)
+    assert eng.total_duration_seconds == pytest.approx(original_dur, rel=0.01)
+
+
+def test_T41_set_speed_2_halves_total_duration():
+    """Q9: 2.0× speed → audio plays twice as fast → duration ≈ original / 2."""
+    from voxkit.playback.engine import PlaybackEngine
+    eng = PlaybackEngine(session=_make_session(duration_s=2.0))
+    original_dur = eng.total_duration_seconds
+    eng.set_speed(2.0)
+    assert eng.total_duration_seconds == pytest.approx(original_dur / 2.0, rel=0.10)
+
+
+def test_T42_set_speed_half_doubles_total_duration():
+    """Q9: 0.5× speed → audio plays at half speed → duration ≈ original × 2."""
+    from voxkit.playback.engine import PlaybackEngine
+    eng = PlaybackEngine(session=_make_session(duration_s=1.0))
+    original_dur = eng.total_duration_seconds
+    eng.set_speed(0.5)
+    assert eng.total_duration_seconds == pytest.approx(original_dur * 2.0, rel=0.10)
+
+
+def test_T43_set_speed_outside_range_raises():
+    """Q9: speed must be within [0.5, 2.0]; values outside raise ValueError."""
+    from voxkit.playback.engine import PlaybackEngine
+    eng = PlaybackEngine(session=_make_session(duration_s=1.0))
+    with pytest.raises(ValueError):
+        eng.set_speed(0.4)
+    with pytest.raises(ValueError):
+        eng.set_speed(2.1)
+    with pytest.raises(ValueError):
+        eng.set_speed(0.0)

@@ -32,6 +32,21 @@ class PlaybackError(Exception):
 # maximum audio floor (-0.5 in the test sessions) so peak detection works.
 _CLICK_AMPLITUDE = 1.5
 
+_SPEED_MIN = 0.5
+_SPEED_MAX = 2.0
+
+
+def _time_stretch(audio: np.ndarray, speed: float) -> np.ndarray:
+    """Return pitch-preserving time-stretched audio at the given speed ratio.
+
+    speed > 1.0 → shorter output (faster playback).
+    speed < 1.0 → longer output (slower playback).
+    Uses librosa phase-vocoder (signalsmith-stretch Python binding absent;
+    librosa is already a project dependency via OnsetDetector, Q46).
+    """
+    import librosa
+    return librosa.effects.time_stretch(audio, rate=speed).astype(np.float32)
+
 
 def _open_output_stream(sample_rate: int):
     """Open the system default audio output stream and return a stream object."""
@@ -68,6 +83,12 @@ class PlaybackEngine:
         self._loop_start: float | None = None
         self._loop_end: float | None = None
 
+        # Time-stretch state (Q9, Q46).
+        self._speed: float = 1.0
+        # _playback_audio is the (possibly stretched) source read by _render.
+        # Equals _audio when speed==1.0; recomputed on set_speed().
+        self._playback_audio: np.ndarray = self._audio
+
         # Pre-allocated output buffer — _render returns a view of this;
         # no per-call data allocation occurs (T32).
         self._output_buf: np.ndarray = np.zeros(1_048_576, dtype=np.float32)
@@ -83,7 +104,7 @@ class PlaybackEngine:
 
     @property
     def total_duration_seconds(self) -> float:
-        return len(self._audio) / self._fs
+        return len(self._playback_audio) / self._fs
 
     @property
     def sample_rate(self) -> int:
@@ -94,6 +115,29 @@ class PlaybackEngine:
         if self._loop_start is None:
             return None
         return (self._loop_start, self._loop_end)
+
+    # ------------------------------------------------------------------
+    # Speed control (Q9, Q46)
+    # ------------------------------------------------------------------
+
+    def set_speed(self, speed: float) -> None:
+        """Set playback speed ratio with pitch preservation (Q9, Q46).
+
+        Range: [0.5, 2.0] (50 %–200 %). Speed 1.0 is pass-through (no stretch).
+        Changing speed resets the playback position to avoid index errors.
+        """
+        if speed < _SPEED_MIN or speed > _SPEED_MAX:
+            raise ValueError(
+                f"speed must be in [{_SPEED_MIN}, {_SPEED_MAX}], got {speed}"
+            )
+        self._speed = speed
+        if speed == 1.0:
+            self._playback_audio = self._audio
+        else:
+            self._playback_audio = _time_stretch(self._audio, speed)
+        # Reset position: the stretched buffer has a different length.
+        with self._lock:
+            self._pos_arr[0] = 0
 
     # ------------------------------------------------------------------
     # Transport control
@@ -157,9 +201,14 @@ class PlaybackEngine:
     def replace_audio(self, audio: np.ndarray) -> None:
         new_audio = audio.astype(np.float32)
         self._audio = new_audio
+        self._playback_audio = (
+            _time_stretch(new_audio, self._speed)
+            if self._speed != 1.0
+            else new_audio
+        )
         with self._lock:
-            if self._pos_arr[0] > len(self._audio):
-                self._pos_arr[0] = len(self._audio)
+            if self._pos_arr[0] > len(self._playback_audio):
+                self._pos_arr[0] = len(self._playback_audio)
         self.state = PlaybackState.STOPPED
         if self._stream is not None:
             self._stream.close()
@@ -185,7 +234,7 @@ class PlaybackEngine:
             pos = self._pos_arr[0]
 
         start_pos = pos
-        n_audio = len(self._audio)
+        n_audio = len(self._playback_audio)
 
         if self._loop_start is not None:
             # Loop-region rendering: wrap at loop_end → loop_start.
@@ -196,7 +245,7 @@ class PlaybackEngine:
                 if pos >= loop_e:
                     pos = loop_s
                 chunk = min(n_frames - written, loop_e - pos)
-                buf[written:written + chunk] = self._audio[pos:pos + chunk]
+                buf[written:written + chunk] = self._playback_audio[pos:pos + chunk]
                 pos += chunk
                 written += chunk
             buf[:n_frames] *= self.volume
@@ -208,7 +257,7 @@ class PlaybackEngine:
                 self.state = PlaybackState.STOPPED
                 return buf
             to_read = min(n_frames, available)
-            buf[:to_read] = self._audio[pos:pos + to_read]
+            buf[:to_read] = self._playback_audio[pos:pos + to_read]
             if to_read < n_frames:
                 buf[to_read:n_frames] = 0.0
             pos += to_read

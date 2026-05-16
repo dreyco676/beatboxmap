@@ -157,6 +157,13 @@ Removals
 WEAK CONSENSUS / OPEN QUESTIONS (carry from v0.11 + v0.12)
 ============================================================
 
+OOD gate wiring (Q50) — canonical tier must enforce unknown-rate bounds
+  T46  run_for_tier("canonical", ood_metrics={"missed_unknown": 0.30,
+       "false_unknown": 0.03}) → release_gate_passed=False (missed > 0.25)
+  T47  run_for_tier("canonical", ood_metrics={"missed_unknown": 0.20,
+       "false_unknown": 0.04}) → release_gate_passed=True when onset gate
+       also passes; and ood_gate_skipped=False
+
 OQ-1  Hard release-gate enforcement of CPU perf target (above).
 OQ-2  Per-class F1 in JSON output (carried from spec §10 item 22).
 OQ-3  Wall-clock vs CPU-time for cpu_perf (CPU-time is more deterministic
@@ -720,3 +727,47 @@ def test_T45_default_calibration_weight_actually_improves_over_no_cal():
         f"uplift_selected={selected.get('uplift_macro_f1')}, "
         f"uplift_no_cal={no_cal.get('uplift_macro_f1')}"
     )
+
+
+# ---------------------------------------------------------------
+# OOD gate wiring (Q50)
+# ---------------------------------------------------------------
+
+def test_T46_canonical_tier_fails_when_ood_missed_unknown_exceeds_bound():
+    """Q50: missed_unknown > 0.25 must flip release_gate_passed to False even
+    when the onset gate passes. The harness currently hardcodes 0.0 for both
+    unknown-rate metrics; this test enforces that real OOD metrics are respected."""
+    from unittest.mock import patch
+    from voxkit.eval.harness import run_for_tier
+    from voxkit.eval.onset_release_gate import ReleaseGateResult
+
+    passing_gate = ReleaseGateResult(passed=True, f=0.97, mae_ms=3.7, dataset="AVP")
+    with patch("voxkit.eval.harness._eval_onset_on_avp", return_value=(0.97, 3.7)), \
+         patch("voxkit.eval.onset_release_gate.release_gate_check", return_value=passing_gate):
+        result = run_for_tier(
+            "canonical",
+            ood_metrics={"missed_unknown": 0.30, "false_unknown": 0.03},
+        )
+    assert result["release_gate_passed"] is False, (
+        "missed_unknown=0.30 exceeds the 0.25 bound; gate must fail"
+    )
+    assert result["missed_unknown"] == pytest.approx(0.30)
+    assert result["ood_gate_skipped"] is False
+
+
+def test_T47_canonical_tier_passes_when_ood_metrics_within_bounds():
+    """Q50: missed_unknown <= 0.25 AND false_unknown <= 0.05 with a passing
+    onset gate → release_gate_passed=True and ood_gate_skipped=False."""
+    from unittest.mock import patch
+    from voxkit.eval.harness import run_for_tier
+    from voxkit.eval.onset_release_gate import ReleaseGateResult
+
+    passing_gate = ReleaseGateResult(passed=True, f=0.97, mae_ms=3.7, dataset="AVP")
+    with patch("voxkit.eval.harness._eval_onset_on_avp", return_value=(0.97, 3.7)), \
+         patch("voxkit.eval.onset_release_gate.release_gate_check", return_value=passing_gate):
+        result = run_for_tier(
+            "canonical",
+            ood_metrics={"missed_unknown": 0.20, "false_unknown": 0.04},
+        )
+    assert result["release_gate_passed"] is True
+    assert result["ood_gate_skipped"] is False

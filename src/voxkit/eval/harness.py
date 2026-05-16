@@ -115,15 +115,22 @@ def _eval_onset_on_avp() -> tuple[float, float]:
     return evaluate_corpus(detector, corpus)
 
 
-def run_for_tier(tier: str) -> dict:
+_OOD_MISSED_UNKNOWN_MAX = 0.25
+_OOD_FALSE_UNKNOWN_MAX = 0.05
+
+
+def run_for_tier(tier: str, *, ood_metrics: dict | None = None) -> dict:
     """Run the eval pipeline for the given tier and return a results dict.
 
     Tier contracts
     --------------
     synthetic           : pipeline smoke-test only; no quality assertions
     minimum-reproducible: F-measure and MAE computed from AVP Personal corpus
-    canonical           : F-measure, MAE, and release-gate pass/fail (falls
-                          back to AVP Personal when canonical dataset is absent)
+    canonical           : F-measure, MAE, and release-gate pass/fail.
+                          Pass ood_metrics={"missed_unknown": float,
+                          "false_unknown": float} to enforce the Q50 bounds.
+                          When omitted, the onset gate is the only binding gate
+                          and ood_gate_skipped=True is set in the result.
     """
     result: dict = {"tier": tier}
 
@@ -142,13 +149,22 @@ def run_for_tier(tier: str) -> dict:
         f_measure, mae_ms = _eval_onset_on_avp()
         result["f_measure"] = f_measure
         result["mae_ms"] = mae_ms
-        gate = release_gate_check(f_measure, mae_ms, "AVP")
-        result["release_gate_passed"] = gate.passed
-        # missed_unknown / false_unknown require a trained classifier and OOD
-        # corpus; they are populated by the operating-point sweep (Q50) when
-        # run via the full calibration pipeline, not by the onset-only harness.
-        result["missed_unknown"] = 0.0
-        result["false_unknown"] = 0.0
+        onset_gate = release_gate_check(f_measure, mae_ms, "AVP")
+
+        if ood_metrics is not None:
+            missed = ood_metrics.get("missed_unknown", 1.0)
+            false_ = ood_metrics.get("false_unknown", 1.0)
+            ood_passed = (missed <= _OOD_MISSED_UNKNOWN_MAX
+                          and false_ <= _OOD_FALSE_UNKNOWN_MAX)
+            result["missed_unknown"] = missed
+            result["false_unknown"] = false_
+            result["ood_gate_skipped"] = False
+            result["release_gate_passed"] = onset_gate.passed and ood_passed
+        else:
+            result["missed_unknown"] = 0.0
+            result["false_unknown"] = 0.0
+            result["ood_gate_skipped"] = True
+            result["release_gate_passed"] = onset_gate.passed
         return result
 
     result["pipeline_ok"] = False
