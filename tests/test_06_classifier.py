@@ -64,6 +64,8 @@ TaxonomyConfig parameterization (Q66)
 PCA-64 path (Q43)
   T28  predict with PCA matrix uses LR_input = PCA @ embedding
   T29  predict without PCA matrix uses LR_input = embedding
+  T52  PCA-64 LOSO macro-F1 does not regress vs full-dim by > 0.5 points
+       (the Q43 ship gate: PCA ships only if regression is within budget)
   T30  Mahalanobis ALWAYS uses full-dim regardless of PCA presence (Q34)
 
 Calibration path with weighting (Q42, Q65)
@@ -1022,4 +1024,59 @@ def test_T51_regularized_mahalanobis_distances_are_meaningfully_separating():
     assert d_far > 5.0 * d_in, (
         f"regularized Mahalanobis is not separating in/out: "
         f"in-class d²={d_in:.2f}, far-point d²={d_far:.2f}"
+    )
+
+
+# ---------------------------------------------------------------
+# PCA-64 regression gate (Q43)
+# ---------------------------------------------------------------
+
+def _loso_macro_f1(X, y, subjects, pca_matrix=None):
+    """Leave-one-subject-out macro-F1 for the Classifier (no calibration)."""
+    from sklearn.metrics import f1_score
+    from voxkit.classifier.classifier import Classifier
+
+    unique_subjects = sorted(set(subjects))
+    all_preds, all_labels = [], []
+    for held_out in unique_subjects:
+        train_mask = subjects != held_out
+        test_mask = subjects == held_out
+        X_tr, y_tr, s_tr = X[train_mask], y[train_mask], subjects[train_mask]
+        X_te, y_te = X[test_mask], y[test_mask]
+
+        clf = Classifier.untrained(taxonomy=None, embedding_dim=X.shape[1])
+        clf.fit(X_tr, y_tr, s_tr, pca_matrix=pca_matrix)
+        # Disable unknown gate so all samples get a class prediction.
+        clf.softmax_threshold = 0.0
+        clf.distance_thresholds = np.full_like(clf.distance_thresholds, 1e9)
+
+        preds = [label for label, _ in clf.predict(X_te)]
+        all_preds.extend(preds)
+        all_labels.extend(y_te.tolist())
+    return f1_score(all_labels, all_preds, average="macro")
+
+
+def test_T52_pca_64_does_not_regress_loso_macro_f1_by_more_than_half_point():
+    """Q43: PCA-64 ships only if it does not regress LOSO macro-F1 by > 0.5
+    points relative to the full-dim baseline. This test enforces that gate on
+    synthetic data — any future embedding or PCA change that breaks the budget
+    will surface here before landing."""
+    from sklearn.decomposition import PCA
+
+    X, y, subjects, _ = _synth_avp(n_classes=4, samples_per_class=30, dim=64, seed=52)
+    X = X.astype(np.float32)
+
+    # Fit PCA on the full dataset once (Q43 does not require per-fold refit).
+    pca = PCA(n_components=32, random_state=52)
+    pca.fit(X)
+    pca_matrix = pca.components_.astype(np.float32)  # (32, 64)
+
+    baseline_f1 = _loso_macro_f1(X, y, subjects, pca_matrix=None)
+    pca_f1 = _loso_macro_f1(X, y, subjects, pca_matrix=pca_matrix)
+
+    regression = baseline_f1 - pca_f1
+    assert regression <= 0.5, (
+        f"PCA-32 regresses LOSO macro-F1 by {regression:.3f} points "
+        f"(baseline={baseline_f1:.3f}, pca={pca_f1:.3f}); "
+        f"Q43 gate is 0.5 points"
     )

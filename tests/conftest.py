@@ -35,7 +35,7 @@ def pytest_addoption(parser: pytest.Parser) -> None:
     parser.addoption(
         "--dataset",
         action="store",
-        default="synthetic",
+        default="canonical",
         choices=_VALID_TIERS,
         help=(
             "Dataset tier to run against. 'synthetic' (default) runs only "
