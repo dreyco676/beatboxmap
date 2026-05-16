@@ -288,6 +288,7 @@ class Recorder:
         self._sleep_handler: Callable | None = None
         self._device_id: str | None = None
         self.active_hostapi: str | None = None
+        self._chunks: list[np.ndarray] = []
 
     def list_devices(self) -> list[DeviceInfo]:
         raw = _raw_device_list()
@@ -319,10 +320,17 @@ class Recorder:
             stream = _open_native_stream(device_id=device_id, hostapi="ALSA", sample_rate=16_000)
             self.active_hostapi = "ALSA"
 
+        self._chunks = []
         self._stream = stream
         self._device_id = device_id
         self._dropped_counter = AtomicCounter()
         self._stop_event.clear()
+
+        try:
+            stream.start()
+        except Exception as e:
+            self._stream = None
+            raise AudioInitError(f"Failed to start audio stream: {e}") from e
 
         # Start worker thread; block until it has registered priority (T17/T18).
         priority_ready = threading.Event()
@@ -340,18 +348,46 @@ class Recorder:
         if prio is not None:
             _set_thread_priority(prio)
         priority_ready.set()
-        self._stop_event.wait()
+
+        chunk_frames = 512
+        while not self._stop_event.is_set():
+            stream = self._stream
+            if stream is None:
+                break
+            try:
+                data, _overflowed = stream.read(chunk_frames)
+                arr = np.asarray(data, dtype=np.float32)
+                if arr.ndim == 2:
+                    arr = arr[:, 0]
+                self._chunks.append(arr.copy())
+            except Exception:
+                break
 
     def close_stream(self) -> None:
         if self._stream is None:
             return
         self._stop_event.set()
+        stream = self._stream
+        try:
+            stream.stop()
+        except Exception:
+            pass
         if self._worker_thread is not None:
             self._worker_thread.join(timeout=2.0)
             self._worker_thread = None
+        try:
+            stream.close()
+        except Exception:
+            pass
         self._stream = None
         self._device_id = None
         self.active_hostapi = None
+
+    def get_recorded_audio(self) -> np.ndarray:
+        """Return all audio captured since the last open_stream() call as float32 mono."""
+        if not self._chunks:
+            return np.zeros(0, dtype=np.float32)
+        return np.concatenate(self._chunks).astype(np.float32)
 
     def get_dropped_buffer_count(self) -> int:
         return self._dropped_counter.value

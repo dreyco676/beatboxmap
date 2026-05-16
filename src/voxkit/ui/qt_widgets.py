@@ -9,18 +9,26 @@ Qt coupling.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from PySide6.QtWidgets import (
+    QApplication,
     QComboBox,
     QDialog,
+    QDoubleSpinBox,
+    QFileDialog,
     QHBoxLayout,
     QLabel,
     QMainWindow,
+    QMessageBox,
     QPushButton,
     QProgressBar,
+    QSpinBox,
     QVBoxLayout,
     QWidget,
 )
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QTimer
+from PySide6.QtGui import QColor, QPainter
 
 from voxkit.ui.banners import BleedQualityBanner, MigrationBanner
 from voxkit.ui.dialogs import CalibrationRejectedDialog, RecordingProgressDialog
@@ -112,34 +120,219 @@ class RecordingPanelWidget(QWidget):
 # ---------------------------------------------------------------
 
 class MainWindow(QMainWindow):
-    """Application shell."""
+    """Application shell — wires model loading, calibration, recording, inference, export."""
 
     def __init__(self, recorder=None, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setWindowTitle("VoxKit")
-        self._recorder = recorder
+
+        from voxkit.audio.recorder import Recorder
+        self._recorder = recorder if recorder is not None else Recorder()
+
+        self._extractor = None
+        self._classifier = None
+        self._manager = None
+        self._is_calibrated = False
+        self._last_events: list = []
+
         self._setup_ui()
+        # Defer model load until after window is shown so the UI appears immediately.
+        QTimer.singleShot(100, self._load_model)
+
+    # ------------------------------------------------------------------
+    # UI construction
+    # ------------------------------------------------------------------
 
     def _setup_ui(self) -> None:
+        menubar = self.menuBar()
+        file_menu = menubar.addMenu("File")
+        file_menu.addAction("Export MIDI…", self._on_export)
+
         central = QWidget()
         self.setCentralWidget(central)
-        layout = QVBoxLayout(central)
+        root = QVBoxLayout(central)
+        root.setSpacing(8)
 
+        # ---- status bar (top) ----
+        self._status_label = QLabel("Loading model…")
+        root.addWidget(self._status_label)
+
+        # ---- controls row ----
+        ctrl = QHBoxLayout()
+
+        self._calibrate_btn = QPushButton("Calibrate…")
+        self._calibrate_btn.setEnabled(False)
+        self._calibrate_btn.clicked.connect(self._on_calibrate)
+        ctrl.addWidget(self._calibrate_btn)
+
+        ctrl.addWidget(QLabel("BPM:"))
+        self._bpm_spin = QDoubleSpinBox()
+        self._bpm_spin.setRange(40, 240)
+        self._bpm_spin.setValue(120)
+        self._bpm_spin.setSingleStep(1)
+        self._bpm_spin.setDecimals(1)
+        ctrl.addWidget(self._bpm_spin)
+
+        ctrl.addWidget(QLabel("Bars:"))
+        self._bars_spin = QSpinBox()
+        self._bars_spin.setRange(1, 32)
+        self._bars_spin.setValue(4)
+        ctrl.addWidget(self._bars_spin)
+
+        ctrl.addStretch()
+        root.addLayout(ctrl)
+
+        # ---- recording panel ----
         recording_container = QWidget()
         recording_container.setObjectName("recording_panel")
-        recording_layout = QVBoxLayout(recording_container)
-        recording_layout.setContentsMargins(0, 0, 0, 0)
-        if self._recorder is not None:
-            self._recording_panel_widget = RecordingPanelWidget(
-                recorder=self._recorder,
-                parent=recording_container,
-            )
-            recording_layout.addWidget(self._recording_panel_widget)
-        layout.addWidget(recording_container)
+        rec_layout = QVBoxLayout(recording_container)
+        rec_layout.setContentsMargins(0, 0, 0, 0)
+        self._recording_panel_widget = RecordingPanelWidget(
+            recorder=self._recorder,
+            on_recording_stopped=self._on_recording_stopped,
+            parent=recording_container,
+        )
+        rec_layout.addWidget(self._recording_panel_widget)
+        root.addWidget(recording_container)
 
-        self._editor_panel = QWidget()
-        self._editor_panel.setObjectName("editor_panel")
-        layout.addWidget(self._editor_panel)
+        # ---- events view (editor_panel objectName preserved for T03) ----
+        editor_container = QWidget()
+        editor_container.setObjectName("editor_panel")
+        editor_layout = QVBoxLayout(editor_container)
+        editor_layout.setContentsMargins(0, 0, 0, 0)
+        self._events_view = EventsViewWidget()
+        editor_layout.addWidget(self._events_view)
+        root.addWidget(editor_container, stretch=1)
+
+        # ---- export button ----
+        self._export_btn = QPushButton("Export MIDI…")
+        self._export_btn.setEnabled(False)
+        self._export_btn.clicked.connect(self._on_export)
+        root.addWidget(self._export_btn)
+
+    # ------------------------------------------------------------------
+    # Model loading
+    # ------------------------------------------------------------------
+
+    def _load_model(self) -> None:
+        try:
+            from voxkit.classifier.embeddings import EmbeddingExtractor
+            from voxkit.classifier.classifier import Classifier
+            from voxkit.classifier.calibration_manager import CalibrationManager
+            from voxkit.core.taxonomy import TaxonomyConfig
+
+            self._extractor = EmbeddingExtractor.from_default("beats")
+            taxonomy = TaxonomyConfig.default_v1_0()
+            self._classifier = Classifier(taxonomy, self._extractor.embedding_dim)
+            self._manager = CalibrationManager(self._classifier)
+
+            self._calibrate_btn.setEnabled(True)
+            self._status_label.setText(
+                "Model loaded. Click Calibrate… to teach VoxKit your sounds."
+            )
+        except Exception as exc:
+            self._status_label.setText(f"Model load failed: {exc}")
+
+    # ------------------------------------------------------------------
+    # Calibration
+    # ------------------------------------------------------------------
+
+    def _on_calibrate(self) -> None:
+        if self._extractor is None:
+            return
+        wizard = CalibrationWizardDialog(
+            extractor=self._extractor,
+            manager=self._manager,
+            classifier=self._classifier,
+            parent=self,
+        )
+        if wizard.exec() == QDialog.Accepted:
+            self._is_calibrated = True
+            self._status_label.setText("Calibrated. Select a device and click Record.")
+
+    # ------------------------------------------------------------------
+    # Recording → inference
+    # ------------------------------------------------------------------
+
+    def _on_recording_stopped(self) -> None:
+        if not self._is_calibrated:
+            QMessageBox.warning(
+                self, "Not calibrated",
+                "Please click Calibrate… and record examples of each sound first.",
+            )
+            return
+
+        audio = self._recorder.get_recorded_audio()
+        if len(audio) < 1600:  # less than 0.1 s at 16 kHz
+            self._status_label.setText("Recording too short — try again.")
+            return
+
+        self._run_inference(audio)
+
+    def _run_inference(self, audio) -> None:
+        import numpy as np
+        from voxkit.ui.model import Model
+        from voxkit.ui.inference_pipeline import run_pipeline
+        from voxkit.dsp.onsets import OnsetDetector
+
+        model = Model(self._extractor, self._classifier)
+        model.prepare(audio)
+
+        onset_detector = OnsetDetector(sample_rate=16_000)
+
+        self._status_label.setText("Processing… (detecting onsets and classifying)")
+        QApplication.processEvents()
+
+        try:
+            result = run_pipeline(
+                audio,
+                model,
+                detect_onsets=lambda a: onset_detector.detect(a),
+            )
+        except Exception as exc:
+            self._status_label.setText(f"Inference failed: {exc}")
+            return
+
+        if result.cancelled:
+            self._status_label.setText("Processing cancelled.")
+            return
+
+        self._last_events = result.events
+        bpm = self._bpm_spin.value()
+        bars = self._bars_spin.value()
+        self._events_view.set_events(result.events, bpm, bars)
+        self._export_btn.setEnabled(True)
+        n = len(result.events)
+        self._status_label.setText(
+            f"Done — {n} event{'s' if n != 1 else ''} detected. "
+            "Export MIDI… to save."
+        )
+
+    # ------------------------------------------------------------------
+    # Export
+    # ------------------------------------------------------------------
+
+    def _on_export(self) -> None:
+        if not self._last_events:
+            QMessageBox.information(self, "Nothing to export", "Record a beat first.")
+            return
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Export MIDI", "", "MIDI files (*.mid)"
+        )
+        if not path:
+            return
+        from voxkit.export.midi import export_midi
+        from voxkit.core.session import TimeSignature
+        try:
+            export_midi(
+                self._last_events,
+                Path(path),
+                bpm=self._bpm_spin.value(),
+                taxonomy=self._classifier.taxonomy,
+            )
+            self._status_label.setText(f"Exported to {Path(path).name}")
+        except Exception as exc:
+            QMessageBox.critical(self, "Export failed", str(exc))
 
 
 # ---------------------------------------------------------------
@@ -439,3 +632,270 @@ class TourOverlayWidget(QWidget):
 
     def simulate_dismiss(self) -> None:
         self._dismiss_btn.click()
+
+
+# ---------------------------------------------------------------
+# EventsViewWidget — piano-roll timeline of classified hits
+# ---------------------------------------------------------------
+
+class EventsViewWidget(QWidget):
+    """Paints classified percussion events as a colour-coded piano roll.
+
+    Rows: one per class (taxonomy order + unknown at bottom).
+    Columns: time from 0 to total duration (bars × beat length).
+    """
+
+    _ROW_HEIGHT = 26
+    _LABEL_W = 110
+    _DOT_R = 6
+    _CLASS_COLORS: dict[str, tuple[int, int, int]] = {
+        "kick":        (220, 80,  80),
+        "snare":       (80,  180, 140),
+        "closed_hat":  (80,  160, 210),
+        "open_hat":    (150, 210, 130),
+        "unknown":     (160, 160, 160),
+    }
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self._events: list = []
+        self._bpm: float = 120.0
+        self._bars: int = 4
+        self._classes: list[str] = []
+        self.setMinimumHeight(160)
+
+    def set_events(self, events: list, bpm: float, bars: int) -> None:
+        from voxkit.core.taxonomy import TaxonomyConfig
+        taxonomy_order = list(TaxonomyConfig.default_v1_0().classes)
+        self._events = list(events)
+        self._bpm = bpm
+        self._bars = bars
+        seen = {e.class_id for e in events}
+        self._classes = [c for c in taxonomy_order if c in seen]
+        if "unknown" in seen:
+            self._classes.append("unknown")
+        if not self._classes:
+            self._classes = taxonomy_order
+        h = len(self._classes) * self._ROW_HEIGHT + 24
+        self.setMinimumHeight(h)
+        self.update()
+
+    def paintEvent(self, event) -> None:  # noqa: N802
+        from PySide6.QtCore import QPointF, QRectF
+
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        w, h = self.width(), self.height()
+
+        painter.fillRect(0, 0, w, h, QColor(22, 22, 28))
+
+        if not self._events:
+            painter.setPen(QColor(100, 100, 110))
+            painter.drawText(
+                0, 0, w, h, Qt.AlignmentFlag.AlignCenter,
+                "Record a beat to see events here",
+            )
+            return
+
+        duration = self._bars * 4.0 * 60.0 / self._bpm
+        timeline_w = max(1, w - self._LABEL_W - 12)
+        top_pad = 12
+
+        for row, cls in enumerate(self._classes):
+            y = top_pad + row * self._ROW_HEIGHT
+            bg = QColor(32, 32, 40) if row % 2 == 0 else QColor(26, 26, 34)
+            painter.fillRect(self._LABEL_W, y, timeline_w, self._ROW_HEIGHT, bg)
+
+            painter.setPen(QColor(180, 180, 195))
+            painter.drawText(
+                QRectF(4, y, self._LABEL_W - 8, self._ROW_HEIGHT),
+                Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter,
+                cls.replace("_", " "),
+            )
+
+            r, g, b = self._CLASS_COLORS.get(cls, (180, 180, 180))
+            fill = QColor(r, g, b)
+            border = QColor(max(0, r - 60), max(0, g - 60), max(0, b - 60))
+            cy = y + self._ROW_HEIGHT / 2.0
+
+            for ev in self._events:
+                if ev.class_id != cls:
+                    continue
+                frac = ev.t / duration if duration > 0 else 0.0
+                frac = max(0.0, min(1.0, frac))
+                x = self._LABEL_W + frac * timeline_w
+                painter.setBrush(fill)
+                painter.setPen(border)
+                painter.drawEllipse(QPointF(x, cy), self._DOT_R, self._DOT_R)
+
+        # Beat grid lines
+        beat_count = self._bars * 4
+        painter.setPen(QColor(50, 50, 60))
+        for b in range(beat_count + 1):
+            x = self._LABEL_W + int(b / beat_count * timeline_w)
+            painter.drawLine(x, top_pad, x, top_pad + len(self._classes) * self._ROW_HEIGHT)
+
+    # ---- test helpers ----
+
+    def event_count(self) -> int:
+        return len(self._events)
+
+
+# ---------------------------------------------------------------
+# CalibrationWizardDialog — per-class sample collection
+# ---------------------------------------------------------------
+
+class CalibrationWizardDialog(QDialog):
+    """Step-by-step wizard: record N samples per class, then commit calibration.
+
+    Uses sounddevice.rec() for simple 1-second blocking snippets so no
+    Recorder bookkeeping is needed during calibration.
+    """
+
+    _SAMPLES_REQUIRED = 3
+    _RECORD_SECONDS = 1.5
+    _SAMPLE_RATE = 16_000
+
+    def __init__(
+        self,
+        extractor,
+        manager,
+        classifier,
+        parent: QWidget | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("Calibration Wizard")
+        self.setMinimumWidth(400)
+
+        self._extractor = extractor
+        self._manager = manager
+        self._classifier = classifier
+
+        from voxkit.ui.calibration_flow import CalibrationFlow
+        self._flow = CalibrationFlow(extractor, manager, classifier)
+        self._classes: tuple[str, ...] = classifier.taxonomy.classes
+        self._current_idx: int = 0
+        self._counts: dict[str, int] = {c: 0 for c in self._classes}
+
+        self._setup_ui()
+        self._refresh()
+
+    def _setup_ui(self) -> None:
+        layout = QVBoxLayout(self)
+        layout.setSpacing(10)
+
+        self._step_label = QLabel()
+        font = self._step_label.font()
+        font.setPointSize(13)
+        font.setBold(True)
+        self._step_label.setFont(font)
+        layout.addWidget(self._step_label)
+
+        self._instruction_label = QLabel()
+        self._instruction_label.setWordWrap(True)
+        layout.addWidget(self._instruction_label)
+
+        self._progress_label = QLabel()
+        layout.addWidget(self._progress_label)
+
+        # Device picker
+        dev_row = QHBoxLayout()
+        dev_row.addWidget(QLabel("Input device:"))
+        self._device_combo = QComboBox()
+        self._populate_devices()
+        dev_row.addWidget(self._device_combo, stretch=1)
+        layout.addLayout(dev_row)
+
+        self._record_btn = QPushButton(f"Record sample (1.5 s)")
+        self._record_btn.clicked.connect(self._on_record)
+        layout.addWidget(self._record_btn)
+
+        self._error_label = QLabel()
+        self._error_label.setStyleSheet("color: #e05050;")
+        self._error_label.setWordWrap(True)
+        layout.addWidget(self._error_label)
+
+        btn_row = QHBoxLayout()
+        btn_row.addStretch()
+        self._next_btn = QPushButton("Next →")
+        self._next_btn.setEnabled(False)
+        self._next_btn.clicked.connect(self._on_next)
+        btn_row.addWidget(self._next_btn)
+        layout.addLayout(btn_row)
+
+    def _populate_devices(self) -> None:
+        try:
+            from voxkit.audio.recorder import Recorder
+            for dev in Recorder().list_devices():
+                self._device_combo.addItem(dev.name, dev.id)
+        except Exception:
+            pass
+
+    def _refresh(self) -> None:
+        cls = self._classes[self._current_idx]
+        n = self._counts[cls]
+        total = len(self._classes)
+        self._step_label.setText(
+            f"Step {self._current_idx + 1} / {total}: {cls.replace('_', ' ')}"
+        )
+        self._instruction_label.setText(
+            f"Say or tap your {cls.replace('_', ' ')} {self._SAMPLES_REQUIRED} times.\n"
+            f"Click the button below to record each {self._RECORD_SECONDS:.0f}-second snippet."
+        )
+        dots = "● " * n + "○ " * (self._SAMPLES_REQUIRED - n)
+        self._progress_label.setText(f"Samples: {dots.strip()}")
+        self._error_label.setText("")
+
+        is_last = self._current_idx == total - 1
+        self._next_btn.setEnabled(n >= self._SAMPLES_REQUIRED)
+        self._next_btn.setText("Finish" if is_last else "Next →")
+
+    def _on_record(self) -> None:
+        import sounddevice as sd
+        import numpy as np
+
+        device_id = self._device_combo.currentData()
+        self._record_btn.setEnabled(False)
+        self._record_btn.setText("Recording…")
+        self._error_label.setText("")
+        QApplication.processEvents()
+
+        try:
+            n_frames = int(self._RECORD_SECONDS * self._SAMPLE_RATE)
+            data = sd.rec(
+                n_frames,
+                samplerate=self._SAMPLE_RATE,
+                channels=1,
+                dtype="float32",
+                device=int(device_id) if device_id is not None else None,
+            )
+            sd.wait()
+            audio = data[:, 0]
+        except Exception as exc:
+            self._error_label.setText(f"Recording failed: {exc}")
+            self._record_btn.setEnabled(True)
+            self._record_btn.setText(f"Record sample ({self._RECORD_SECONDS:.0f} s)")
+            return
+
+        cls = self._classes[self._current_idx]
+        try:
+            self._flow.add_sample(cls, audio)
+            self._counts[cls] += 1
+        except Exception as exc:
+            self._error_label.setText(f"Sample rejected: {exc}")
+        finally:
+            self._record_btn.setEnabled(True)
+            self._record_btn.setText(f"Record sample ({self._RECORD_SECONDS:.0f} s)")
+            self._refresh()
+
+    def _on_next(self) -> None:
+        is_last = self._current_idx == len(self._classes) - 1
+        if is_last:
+            try:
+                self._flow.commit()
+                self.accept()
+            except Exception as exc:
+                self._error_label.setText(f"Calibration failed: {exc}")
+        else:
+            self._current_idx += 1
+            self._refresh()
