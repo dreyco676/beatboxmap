@@ -19,8 +19,8 @@ class ReleaseGateResult:
 
 
 _THRESHOLDS: dict[str, dict] = {
-    "AVP": {"f_min": 0.90, "mae_ms_max": 30.0},
-    "OOD": {"f_min": 0.88, "mae_ms_max": 40.0},
+    "AVP": {"f_min": 0.92, "mae_ms_max": 15.0},
+    "OOD": {"f_min": 0.88, "mae_ms_max": 25.0},
 }
 
 

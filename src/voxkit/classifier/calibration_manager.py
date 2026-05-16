@@ -149,7 +149,7 @@ class CalibrationManager:
         self,
         classifier: Any,
         *,
-        calibration_weight: float = 1.0,
+        calibration_weight: float = 50.0,
         telemetry: Any | None = None,
     ) -> None:
         self._classifier = classifier
