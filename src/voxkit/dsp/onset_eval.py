@@ -141,7 +141,7 @@ def _load_avp_corpus() -> list[tuple[np.ndarray, list[float]]]:
                 g = gcd(sr, 16_000)
                 data = resample_poly(data, 16_000 // g, sr // g).astype(np.float32)
             onsets: list[float] = []
-            with open(csv_path, newline="") as f_csv:
+            with open(csv_path, newline="", encoding="utf-8") as f_csv:
                 for row in csv.reader(f_csv):
                     if row:
                         try:
