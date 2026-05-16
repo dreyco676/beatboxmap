@@ -94,7 +94,7 @@ def _load_avp_corpus(personal_dir: Path) -> list[tuple[np.ndarray, list[float]]]
                 data = resample_poly(data, 16_000 // g, sr // g).astype(np.float32)
 
             onset_times: list[float] = []
-            with open(csv_path, newline="") as f:
+            with open(csv_path, newline="", encoding="utf-8") as f:
                 for row in csv.reader(f):
                     if row:
                         try:
