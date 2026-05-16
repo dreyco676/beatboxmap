@@ -60,8 +60,36 @@ def _current_platform() -> str:
 
 
 def _apply_priority(priority: Any) -> None:
-    """Apply thread scheduling priority. Real implementation uses MMCSS/SCHED_FIFO."""
-    pass  # no-op in non-Windows/Linux or when not root
+    """Apply thread scheduling priority per Q67.
+
+    Windows: registers the calling thread with MMCSS task *priority* (e.g.
+    "Pro Audio") via AvSetMmThreadCharacteristicsW in avrt.dll.  A zero
+    return handle means the OS refused — non-fatal; dropped buffers are
+    tracked separately by the caller.
+
+    Linux (Phase 1.5): sets SCHED_FIFO at the given numeric priority via
+    os.sched_setscheduler.  Requires setcap cap_sys_nice on the Python
+    binary (or root); silently degrades if not available.
+
+    All other platforms (Darwin, …): documented no-op for v1.0.
+    """
+    if isinstance(priority, str):
+        # Windows MMCSS path.
+        try:
+            import ctypes
+            import ctypes.wintypes
+            avrt = ctypes.WinDLL("avrt")
+            task_index = ctypes.wintypes.DWORD(0)
+            avrt.AvSetMmThreadCharacteristicsW(priority, ctypes.byref(task_index))
+        except Exception:
+            pass
+    elif isinstance(priority, tuple) and len(priority) == 2 and priority[0] == "SCHED_FIFO":
+        # Linux Phase 1.5 path.
+        try:
+            import os as _os
+            _os.sched_setscheduler(0, _os.SCHED_FIFO, _os.sched_param(priority[1]))
+        except Exception:
+            pass
 
 
 def _set_thread_priority(priority: Any = None, *, _current_platform_value: str | None = None) -> None:
