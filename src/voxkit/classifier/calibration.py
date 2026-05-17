@@ -97,7 +97,7 @@ def fit_lr_head(
     best_c, best_score = 10.0, -1.0
     for C in [10.0, 1.0, 0.1, 0.01]:
         lr = LogisticRegression(
-            C=C, solver="saga", penalty="l2", max_iter=5000, random_state=0
+            C=C, solver="saga", max_iter=5000, random_state=0
         )
         scores = cross_val_score(
             lr, X_train, y_train, cv=cv, scoring="accuracy",
@@ -110,7 +110,7 @@ def fit_lr_head(
     X_final = X_fit if X_fit is not None else X_train
     y_final = y_fit if y_fit is not None else y_train
     lr_final = LogisticRegression(
-        C=best_c, solver="saga", penalty="l2", max_iter=5000, random_state=0
+        C=best_c, solver="saga", max_iter=5000, random_state=0
     )
     lr_final.fit(X_final, y_final, sample_weight=sample_weight)
     return lr_final.coef_, lr_final.intercept_
