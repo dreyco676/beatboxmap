@@ -187,6 +187,18 @@ def record_blocking(
     return data[:, 0]
 
 
+def play_nonblocking(audio: "np.ndarray", sample_rate: int = 16_000) -> None:
+    """Start non-blocking playback of *audio*."""
+    import sounddevice as sd
+    sd.play(audio, samplerate=sample_rate)
+
+
+def stop_playback() -> None:
+    """Abort any sounddevice playback in progress."""
+    import sounddevice as sd
+    sd.stop()
+
+
 # ---------------------------------------------------------------
 # AtomicCounter
 # ---------------------------------------------------------------

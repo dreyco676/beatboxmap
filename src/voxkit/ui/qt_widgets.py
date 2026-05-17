@@ -24,10 +24,11 @@ from PySide6.QtWidgets import (
     QPushButton,
     QProgressBar,
     QSpinBox,
+    QMenu,
     QVBoxLayout,
     QWidget,
 )
-from PySide6.QtCore import Qt, QTimer
+from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QPainter
 
 from voxkit.ui.banners import BleedQualityBanner, MigrationBanner
@@ -134,6 +135,7 @@ class MainWindow(QMainWindow):
         self._manager = None
         self._is_calibrated = False
         self._last_events: list = []
+        self._last_audio = None
 
         self._setup_ui()
         # Defer model load until after window is shown so the UI appears immediately.
@@ -186,12 +188,14 @@ class MainWindow(QMainWindow):
         self._bpm_spin.setValue(120)
         self._bpm_spin.setSingleStep(1)
         self._bpm_spin.setDecimals(1)
+        self._bpm_spin.valueChanged.connect(self._on_grid_changed)
         ctrl.addWidget(self._bpm_spin)
 
         ctrl.addWidget(QLabel("Bars:"))
         self._bars_spin = QSpinBox()
         self._bars_spin.setRange(1, 32)
         self._bars_spin.setValue(4)
+        self._bars_spin.valueChanged.connect(self._on_grid_changed)
         ctrl.addWidget(self._bars_spin)
 
         ctrl.addStretch()
@@ -210,12 +214,23 @@ class MainWindow(QMainWindow):
         rec_layout.addWidget(self._recording_panel_widget)
         root.addWidget(recording_container)
 
+        # ---- playback controls ----
+        play_row = QHBoxLayout()
+        self._play_btn = QPushButton("▶  Play")
+        self._play_btn.setEnabled(False)
+        self._play_btn.setCheckable(True)
+        self._play_btn.clicked.connect(self._on_play_toggled)
+        play_row.addWidget(self._play_btn)
+        play_row.addStretch()
+        root.addLayout(play_row)
+
         # ---- events view (editor_panel objectName preserved for T03) ----
         editor_container = QWidget()
         editor_container.setObjectName("editor_panel")
         editor_layout = QVBoxLayout(editor_container)
         editor_layout.setContentsMargins(0, 0, 0, 0)
         self._events_view = EventsViewWidget()
+        self._events_view.events_changed.connect(self._on_events_changed)
         editor_layout.addWidget(self._events_view)
         root.addWidget(editor_container, stretch=1)
 
@@ -282,6 +297,8 @@ class MainWindow(QMainWindow):
             self._status_label.setText("Recording too short — try again.")
             return
 
+        self._last_audio = audio
+        self._play_btn.setEnabled(True)
         self._run_inference(audio)
 
     def _run_inference(self, audio) -> None:
@@ -322,6 +339,41 @@ class MainWindow(QMainWindow):
             f"Done — {n} event{'s' if n != 1 else ''} detected. "
             "Export MIDI… to save."
         )
+
+    # ------------------------------------------------------------------
+    # Playback
+    # ------------------------------------------------------------------
+
+    def _on_play_toggled(self, checked: bool) -> None:
+        from voxkit.audio.recorder import play_nonblocking, stop_playback
+        if checked:
+            if self._last_audio is None:
+                self._play_btn.setChecked(False)
+                return
+            self._play_btn.setText("■  Stop")
+            play_nonblocking(self._last_audio, sample_rate=16_000)
+            duration_ms = int(len(self._last_audio) / 16_000 * 1000) + 300
+            QTimer.singleShot(duration_ms, self._on_playback_finished)
+        else:
+            stop_playback()
+            self._on_playback_finished()
+
+    def _on_playback_finished(self) -> None:
+        self._play_btn.setChecked(False)
+        self._play_btn.setText("▶  Play")
+
+    # ------------------------------------------------------------------
+    # Grid / events callbacks
+    # ------------------------------------------------------------------
+
+    def _on_grid_changed(self) -> None:
+        if self._last_events:
+            self._events_view.set_events(
+                self._last_events, self._bpm_spin.value(), self._bars_spin.value()
+            )
+
+    def _on_events_changed(self, events: list) -> None:
+        self._last_events = events
 
     # ------------------------------------------------------------------
     # Export
@@ -658,7 +710,10 @@ class EventsViewWidget(QWidget):
 
     Rows: one per class (taxonomy order + unknown at bottom).
     Columns: time from 0 to total duration (bars × beat length).
+    Right-click any dot to reclassify or delete the event.
     """
+
+    events_changed = Signal(list)
 
     _ROW_HEIGHT = 26
     _LABEL_W = 110
@@ -678,23 +733,89 @@ class EventsViewWidget(QWidget):
         self._bpm: float = 120.0
         self._bars: int = 4
         self._classes: list[str] = []
+        self._all_classes: list[str] = []
         self.setMinimumHeight(160)
 
     def set_events(self, events: list, bpm: float, bars: int) -> None:
         from voxkit.core.taxonomy import TaxonomyConfig
         taxonomy_order = list(TaxonomyConfig.default_v1_0().classes)
+        self._all_classes = list(taxonomy_order) + ["unknown"]
         self._events = list(events)
         self._bpm = bpm
         self._bars = bars
-        seen = {e.class_id for e in events}
+        self._rebuild_classes()
+        h = len(self._classes) * self._ROW_HEIGHT + 24
+        self.setMinimumHeight(h)
+        self.update()
+
+    def _rebuild_classes(self) -> None:
+        from voxkit.core.taxonomy import TaxonomyConfig
+        taxonomy_order = list(TaxonomyConfig.default_v1_0().classes)
+        seen = {e.class_id for e in self._events}
         self._classes = [c for c in taxonomy_order if c in seen]
         if "unknown" in seen:
             self._classes.append("unknown")
         if not self._classes:
             self._classes = taxonomy_order
-        h = len(self._classes) * self._ROW_HEIGHT + 24
-        self.setMinimumHeight(h)
+
+    # ------------------------------------------------------------------
+    # Mouse / context menu
+    # ------------------------------------------------------------------
+
+    def mousePressEvent(self, event) -> None:  # noqa: N802
+        if self._events and event.button() in (
+            Qt.MouseButton.RightButton, Qt.MouseButton.LeftButton
+        ):
+            ev = self._find_event_at(event.position())
+            if ev is not None:
+                self._show_event_menu(ev, event.globalPosition().toPoint())
+                return
+        super().mousePressEvent(event)
+
+    def _find_event_at(self, pos):
+        if not self._events or not self._classes:
+            return None
+        duration = self._bars * 4.0 * 60.0 / self._bpm
+        timeline_w = max(1, self.width() - self._LABEL_W - 12)
+        top_pad = 12
+        px, py = pos.x(), pos.y()
+        best_ev, best_dist = None, float(self._DOT_R + 6)
+        for ev in self._events:
+            if ev.class_id not in self._classes:
+                continue
+            row = self._classes.index(ev.class_id)
+            cy = top_pad + row * self._ROW_HEIGHT + self._ROW_HEIGHT / 2.0
+            frac = max(0.0, min(1.0, ev.t / duration if duration > 0 else 0.0))
+            cx = self._LABEL_W + frac * timeline_w
+            dist = ((px - cx) ** 2 + (py - cy) ** 2) ** 0.5
+            if dist < best_dist:
+                best_dist = dist
+                best_ev = ev
+        return best_ev
+
+    def _show_event_menu(self, ev, global_pos) -> None:
+        from voxkit.core.session import Event
+        menu = QMenu(self)
+        for cls in self._all_classes:
+            action = menu.addAction(cls.replace("_", " ").title())
+            action.setCheckable(True)
+            action.setChecked(cls == ev.class_id)
+            action.setData(cls)
+        menu.addSeparator()
+        delete_action = menu.addAction("Delete event")
+        chosen = menu.exec(global_pos)
+        if chosen is None:
+            return
+        if chosen is delete_action:
+            self._events = [e for e in self._events if e is not ev]
+        else:
+            new_cls = chosen.data()
+            if new_cls != ev.class_id:
+                new_ev = Event(t=ev.t, class_id=new_cls, score=ev.score)
+                self._events = [new_ev if e is ev else e for e in self._events]
+        self._rebuild_classes()
         self.update()
+        self.events_changed.emit(list(self._events))
 
     def paintEvent(self, event) -> None:  # noqa: N802
         from PySide6.QtCore import QPointF, QRectF
