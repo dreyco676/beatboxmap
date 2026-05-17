@@ -35,6 +35,7 @@ forbidden_modules =
 # output).  All other modules in the forbidden list must stay clean.
 ignore_imports =
     voxkit.playback.engine -> sounddevice
+    voxkit.ui.qt_widgets -> voxkit.audio.recorder
 
 # ---------------------------------------------------------------
 # Contract 2: no module under voxkit.core / classifier / eval / ui

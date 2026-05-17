@@ -172,6 +172,21 @@ def _open_native_stream(*, device_id: str, hostapi: str, sample_rate: int, **kwa
     return sd.InputStream(device=int(device_id), samplerate=sample_rate, channels=1)
 
 
+def record_blocking(
+    duration_s: float,
+    sample_rate: int = 16_000,
+    device: int | None = None,
+) -> "np.ndarray":
+    """Record audio synchronously for *duration_s* seconds and return a 1-D float32 array."""
+    import numpy as np
+    import sounddevice as sd
+
+    n_frames = int(duration_s * sample_rate)
+    data = sd.rec(n_frames, samplerate=sample_rate, channels=1, dtype="float32", device=device)
+    sd.wait()
+    return data[:, 0]
+
+
 # ---------------------------------------------------------------
 # AtomicCounter
 # ---------------------------------------------------------------

@@ -878,8 +878,7 @@ class CalibrationWizardDialog(QDialog):
         self._next_btn.setText("Finish" if is_last else "Next →")
 
     def _on_record(self) -> None:
-        import sounddevice as sd
-        import numpy as np
+        from voxkit.audio.recorder import record_blocking
 
         device_id = self._device_combo.currentData()
         self._record_btn.setEnabled(False)
@@ -888,16 +887,11 @@ class CalibrationWizardDialog(QDialog):
         QApplication.processEvents()
 
         try:
-            n_frames = int(self._RECORD_SECONDS * self._SAMPLE_RATE)
-            data = sd.rec(
-                n_frames,
-                samplerate=self._SAMPLE_RATE,
-                channels=1,
-                dtype="float32",
+            audio = record_blocking(
+                self._RECORD_SECONDS,
+                sample_rate=self._SAMPLE_RATE,
                 device=int(device_id) if device_id is not None else None,
             )
-            sd.wait()
-            audio = data[:, 0]
         except Exception as exc:
             self._error_label.setText(f"Recording failed: {exc}")
             self._record_btn.setEnabled(True)
