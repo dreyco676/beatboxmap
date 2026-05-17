@@ -149,6 +149,9 @@ class MainWindow(QMainWindow):
         menubar = self.menuBar()
         file_menu = menubar.addMenu("File")
         file_menu.addAction("Export MIDI…", self._on_export)
+        file_menu.addSeparator()
+        file_menu.addAction("Save Calibration…", self._on_save_calibration)
+        file_menu.addAction("Load Calibration…", self._on_load_calibration)
 
         central = QWidget()
         self.setCentralWidget(central)
@@ -234,11 +237,22 @@ class MainWindow(QMainWindow):
         editor_layout.addWidget(self._events_view)
         root.addWidget(editor_container, stretch=1)
 
-        # ---- export button ----
+        # ---- bottom action row ----
+        bottom_row = QHBoxLayout()
+        self._reinforce_btn = QPushButton("Reinforce Model")
+        self._reinforce_btn.setEnabled(False)
+        self._reinforce_btn.setToolTip(
+            "Reclassify any wrong events above (right-click), then click here "
+            "to add this recording to the training data and re-fit."
+        )
+        self._reinforce_btn.clicked.connect(self._on_reinforce)
+        bottom_row.addWidget(self._reinforce_btn)
+        bottom_row.addStretch()
         self._export_btn = QPushButton("Export MIDI…")
         self._export_btn.setEnabled(False)
         self._export_btn.clicked.connect(self._on_export)
-        root.addWidget(self._export_btn)
+        bottom_row.addWidget(self._export_btn)
+        root.addLayout(bottom_row)
 
     # ------------------------------------------------------------------
     # Model loading
@@ -334,6 +348,7 @@ class MainWindow(QMainWindow):
         bars = self._bars_spin.value()
         self._events_view.set_events(result.events, bpm, bars)
         self._export_btn.setEnabled(True)
+        self._reinforce_btn.setEnabled(True)
         n = len(result.events)
         self._status_label.setText(
             f"Done — {n} event{'s' if n != 1 else ''} detected. "
@@ -400,6 +415,92 @@ class MainWindow(QMainWindow):
             self._status_label.setText(f"Exported to {Path(path).name}")
         except Exception as exc:
             QMessageBox.critical(self, "Export failed", str(exc))
+
+    # ------------------------------------------------------------------
+    # Calibration persistence
+    # ------------------------------------------------------------------
+
+    def _on_save_calibration(self) -> None:
+        if not self._is_calibrated or self._classifier is None:
+            QMessageBox.information(self, "No calibration", "Calibrate first.")
+            return
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Save Calibration", "", "VoxKit Calibration (*.vkc)"
+        )
+        if not path:
+            return
+        try:
+            self._classifier.save(Path(path))
+            self._status_label.setText(f"Calibration saved to {Path(path).name}")
+        except Exception as exc:
+            QMessageBox.critical(self, "Save failed", str(exc))
+
+    def _on_load_calibration(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Load Calibration", "", "VoxKit Calibration (*.vkc)"
+        )
+        if not path:
+            return
+        try:
+            from voxkit.classifier.classifier import Classifier
+            self._classifier = Classifier.load(Path(path))
+            self._is_calibrated = True
+            self._status_label.setText(
+                f"Calibration loaded from {Path(path).name}. Ready to record."
+            )
+        except Exception as exc:
+            QMessageBox.critical(self, "Load failed", str(exc))
+
+    # ------------------------------------------------------------------
+    # Reinforcement loop
+    # ------------------------------------------------------------------
+
+    def _on_reinforce(self) -> None:
+        import numpy as np
+
+        if self._last_audio is None or not self._last_events or self._classifier is None:
+            return
+
+        unknown_id = self._classifier.taxonomy.unknown_class_id
+        known_events = [ev for ev in self._last_events if ev.class_id != unknown_id]
+        if not known_events:
+            QMessageBox.information(
+                self, "Nothing to reinforce",
+                "All events are classified as unknown. "
+                "Reclassify some events first (right-click on a dot).",
+            )
+            return
+
+        self._status_label.setText(
+            f"Extracting embeddings for {len(known_events)} confirmed events…"
+        )
+        QApplication.processEvents()
+
+        try:
+            onset_times = [ev.t for ev in known_events]
+            new_X = self._extractor.extract_at_onsets(
+                self._last_audio, onset_times, sample_rate=16_000
+            )
+            new_y = np.array([ev.class_id for ev in known_events])
+
+            existing_X = self._classifier._stored_avp_X
+            existing_y = self._classifier._stored_avp_y
+            existing_s = self._classifier._stored_avp_subjects
+
+            next_subject = int(existing_s.max()) + 1 if len(existing_s) > 0 else 0
+            new_s = np.arange(len(new_y)) + next_subject
+            combined_X = np.vstack([existing_X, new_X])
+            combined_y = np.concatenate([existing_y, new_y])
+            combined_s = np.concatenate([existing_s, new_s])
+
+            self._classifier.fit(combined_X, combined_y, combined_s)
+            n = len(known_events)
+            self._status_label.setText(
+                f"Model reinforced with {n} event{'s' if n != 1 else ''}. "
+                "Record again to see the improvement."
+            )
+        except Exception as exc:
+            self._status_label.setText(f"Reinforcement failed: {exc}")
 
 
 # ---------------------------------------------------------------
