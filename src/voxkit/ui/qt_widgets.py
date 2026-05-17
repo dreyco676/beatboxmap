@@ -13,6 +13,7 @@ from pathlib import Path
 
 from PySide6.QtWidgets import (
     QApplication,
+    QCheckBox,
     QComboBox,
     QDialog,
     QDoubleSpinBox,
@@ -47,12 +48,15 @@ class RecordingPanelWidget(QWidget):
         self,
         recorder,
         on_recording_stopped=None,
+        on_before_start=None,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
         self._recorder = recorder
         self._on_stopped = on_recording_stopped
+        self._on_before_start = on_before_start
         self._recording = False
+        self._pending_start = False
         self._setup_ui()
         self._populate_devices()
 
@@ -80,23 +84,44 @@ class RecordingPanelWidget(QWidget):
 
     def _on_device_changed(self) -> None:
         has_device = self._device_combo.count() > 0
-        if not self._recording:
+        if not self._recording and not self._pending_start:
             self._record_btn.setEnabled(has_device)
 
     def _on_record_clicked(self) -> None:
-        if not self._recording:
-            device_id = self._device_combo.currentData()
-            self._recorder.open_stream(device_id)
-            self._recording = True
-            self._record_btn.setText("Stop Recording")
-            self._device_combo.setEnabled(False)
-        else:
-            self._recorder.close_stream()
-            self._recording = False
+        if self._recording:
+            self._do_stop_recording()
+        elif self._pending_start:
+            # Cancel the count-in
+            self._pending_start = False
+            from voxkit.audio.recorder import stop_playback
+            stop_playback()
             self._record_btn.setText("Record")
             self._device_combo.setEnabled(True)
-            if self._on_stopped is not None:
-                self._on_stopped()
+        else:
+            self._pending_start = True
+            self._record_btn.setText("Cancel")
+            self._device_combo.setEnabled(False)
+            if self._on_before_start is not None:
+                self._on_before_start(self._do_start_recording)
+            else:
+                self._do_start_recording()
+
+    def _do_start_recording(self) -> None:
+        if not self._pending_start:
+            return  # cancelled during count-in
+        self._pending_start = False
+        self._recording = True
+        device_id = self._device_combo.currentData()
+        self._recorder.open_stream(device_id)
+        self._record_btn.setText("Stop Recording")
+
+    def _do_stop_recording(self) -> None:
+        self._recorder.close_stream()
+        self._recording = False
+        self._record_btn.setText("Record")
+        self._device_combo.setEnabled(True)
+        if self._on_stopped is not None:
+            self._on_stopped()
 
     # ---- test helpers ----
 
@@ -201,6 +226,10 @@ class MainWindow(QMainWindow):
         self._bars_spin.valueChanged.connect(self._on_grid_changed)
         ctrl.addWidget(self._bars_spin)
 
+        self._countin_check = QCheckBox("Count-in")
+        self._countin_check.setToolTip("Play a 1-bar click count-in before recording starts")
+        ctrl.addWidget(self._countin_check)
+
         ctrl.addStretch()
         root.addLayout(ctrl)
 
@@ -212,6 +241,7 @@ class MainWindow(QMainWindow):
         self._recording_panel_widget = RecordingPanelWidget(
             recorder=self._recorder,
             on_recording_stopped=self._on_recording_stopped,
+            on_before_start=self._count_in_then_start,
             parent=recording_container,
         )
         rec_layout.addWidget(self._recording_panel_widget)
@@ -237,8 +267,21 @@ class MainWindow(QMainWindow):
         editor_layout.addWidget(self._events_view)
         root.addWidget(editor_container, stretch=1)
 
+        # ---- mute row (populated in _load_model once taxonomy is known) ----
+        self._mute_checks: dict[str, QCheckBox] = {}
+        mute_row = QHBoxLayout()
+        mute_row.addWidget(QLabel("Mute:"))
+        self._mute_row = mute_row
+        root.addLayout(mute_row)
+
         # ---- bottom action row ----
         bottom_row = QHBoxLayout()
+        self._preview_btn = QPushButton("▶  Preview MIDI")
+        self._preview_btn.setEnabled(False)
+        self._preview_btn.setCheckable(True)
+        self._preview_btn.setToolTip("Render events to synth drum sounds and play back")
+        self._preview_btn.clicked.connect(self._on_preview_midi)
+        bottom_row.addWidget(self._preview_btn)
         self._reinforce_btn = QPushButton("Reinforce Model")
         self._reinforce_btn.setEnabled(False)
         self._reinforce_btn.setToolTip(
@@ -269,6 +312,15 @@ class MainWindow(QMainWindow):
             taxonomy = TaxonomyConfig.default_v1_0()
             self._classifier = Classifier(taxonomy, self._extractor.embedding_dim)
             self._manager = CalibrationManager(self._classifier)
+
+            # Populate per-class mute checkboxes
+            all_classes = list(taxonomy.classes) + [taxonomy.unknown_class_id]
+            for cls in all_classes:
+                chk = QCheckBox(cls.replace("_", " ").title())
+                chk.stateChanged.connect(self._on_mute_changed)
+                self._mute_row.addWidget(chk)
+                self._mute_checks[cls] = chk
+            self._mute_row.addStretch()
 
             self._calibrate_btn.setEnabled(True)
             self._status_label.setText(
@@ -349,11 +401,28 @@ class MainWindow(QMainWindow):
         self._events_view.set_events(result.events, bpm, bars)
         self._export_btn.setEnabled(True)
         self._reinforce_btn.setEnabled(True)
+        self._preview_btn.setEnabled(True)
         n = len(result.events)
         self._status_label.setText(
             f"Done — {n} event{'s' if n != 1 else ''} detected. "
             "Export MIDI… to save."
         )
+
+    # ------------------------------------------------------------------
+    # Playback
+    # ------------------------------------------------------------------
+
+    def _count_in_then_start(self, start_fn) -> None:
+        if not self._countin_check.isChecked():
+            start_fn()
+            return
+        from voxkit.playback.synth import generate_click_track
+        from voxkit.audio.recorder import play_nonblocking
+        bpm = self._bpm_spin.value()
+        click = generate_click_track(bpm, bars=1)
+        play_nonblocking(click)
+        bar_ms = int(4 * 60_000 / bpm) + 80
+        QTimer.singleShot(bar_ms, start_fn)
 
     # ------------------------------------------------------------------
     # Playback
@@ -365,6 +434,10 @@ class MainWindow(QMainWindow):
             if self._last_audio is None:
                 self._play_btn.setChecked(False)
                 return
+            if self._preview_btn.isChecked():
+                self._preview_btn.setChecked(False)
+                stop_playback()
+                self._on_preview_finished()
             self._play_btn.setText("■  Stop")
             play_nonblocking(self._last_audio, sample_rate=16_000)
             duration_ms = int(len(self._last_audio) / 16_000 * 1000) + 300
@@ -389,6 +462,45 @@ class MainWindow(QMainWindow):
 
     def _on_events_changed(self, events: list) -> None:
         self._last_events = events
+
+    def _on_mute_changed(self) -> None:
+        self._events_view.set_muted(self._muted_classes())
+
+    def _muted_classes(self) -> set[str]:
+        return {cls for cls, chk in self._mute_checks.items() if chk.isChecked()}
+
+    # ------------------------------------------------------------------
+    # MIDI preview
+    # ------------------------------------------------------------------
+
+    def _on_preview_midi(self, checked: bool) -> None:
+        from voxkit.audio.recorder import play_nonblocking, stop_playback
+        from voxkit.playback.synth import render_events
+        if checked:
+            if not self._last_events:
+                self._preview_btn.setChecked(False)
+                return
+            if self._play_btn.isChecked():
+                self._play_btn.setChecked(False)
+                stop_playback()
+                self._on_playback_finished()
+            self._preview_btn.setText("■  Stop Preview")
+            audio = render_events(
+                self._last_events,
+                bpm=self._bpm_spin.value(),
+                bars=self._bars_spin.value(),
+                muted=self._muted_classes(),
+            )
+            play_nonblocking(audio)
+            duration_ms = int(self._bars_spin.value() * 4 * 60_000 / self._bpm_spin.value()) + 300
+            QTimer.singleShot(duration_ms, self._on_preview_finished)
+        else:
+            stop_playback()
+            self._on_preview_finished()
+
+    def _on_preview_finished(self) -> None:
+        self._preview_btn.setChecked(False)
+        self._preview_btn.setText("▶  Preview MIDI")
 
     # ------------------------------------------------------------------
     # Export
@@ -835,7 +947,12 @@ class EventsViewWidget(QWidget):
         self._bars: int = 4
         self._classes: list[str] = []
         self._all_classes: list[str] = []
+        self._muted: set[str] = set()
         self.setMinimumHeight(160)
+
+    def set_muted(self, muted: set[str]) -> None:
+        self._muted = set(muted)
+        self.update()
 
     def set_events(self, events: list, bpm: float, bars: int) -> None:
         from voxkit.core.taxonomy import TaxonomyConfig
@@ -957,9 +1074,10 @@ class EventsViewWidget(QWidget):
             )
 
             r, g, b = self._CLASS_COLORS.get(cls, (0, 180, 0))
-            fill = QColor(r, g, b)
-            # Inner glow: slightly dimmer version of the same hue
-            glow = QColor(r // 3, g // 3, b // 3)
+            muted = cls in self._muted
+            dim = 6 if muted else 1
+            fill = QColor(r // dim, g // dim, b // dim)
+            glow = QColor(r // (dim * 3), g // (dim * 3), b // (dim * 3))
             cy = y + self._ROW_HEIGHT / 2.0
 
             for ev in self._events:
