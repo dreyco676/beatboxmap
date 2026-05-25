@@ -44,9 +44,33 @@ pre-commit install
 On Linux, sounddevice requires PortAudio:
 
 ```bash
-sudo apt-get install libportaudio2   # Debian/Ubuntu
+sudo apt-get install libportaudio2   # Debian/Ubuntu / Linux Mint
 sudo dnf install portaudio           # Fedora
 ```
+
+**Optional: real-time thread priority (SCHED_FIFO) on Linux.**
+VoxKit's resampler worker requests `SCHED_FIFO` priority 80 (Q67) for
+lower-latency audio.  Without it the app falls back silently to normal
+scheduling — usable but potentially droppy on a loaded CPU.
+
+To enable it, grant the Python binary `cap_sys_nice`:
+
+```bash
+# Replace the path with your venv's python3 if using a virtual environment.
+sudo setcap cap_sys_nice+ep $(which python3)
+
+# Verify:
+getcap $(which python3)
+# Expected output: /usr/bin/python3 = cap_sys_nice+ep
+```
+
+> **Security note:** `cap_sys_nice` lets that binary change scheduling
+> priorities for its own threads.  It does not grant root or allow
+> modification of other processes.  Limit this to a venv python if you
+> are security-conscious:
+> ```bash
+> sudo setcap cap_sys_nice+ep .venv/bin/python3
+> ```
 
 ---
 

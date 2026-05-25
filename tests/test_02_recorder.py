@@ -141,7 +141,7 @@ WEAK CONSENSUS / OPEN QUESTIONS (carry from v0.11 + v0.12)
 OQ-1  USB hot-plug during recording → DeviceDisconnected mid-stream.
       [Lin, Alex, Casey: 3/9 — defer; T24 covers handle_disconnect at
       the picker but not mid-stream. Real-world but rare; tracker.]
-OQ-2  Linux PipeWire backend test parity (Phase 1.5; deferred per Q84).
+OQ-2  Linux PipeWire backend test parity — RESOLVED below (T36–T40).
 OQ-3  T25 reads .importlinter via configparser; if that file's section
       schema changes, this test breaks before lint-imports does. Sam
       flagged. v0.12 tracker: replace with subprocess invocation of
@@ -150,6 +150,27 @@ OQ-4  v0.11 T12 (gil_hold_time wall-clock) is now redundant with
       v0.11 T26 (parallel-thread GIL release) and v0.12 T26 retighten.
       Lin recommended deletion or rename. v0.12: rename to
       _wallclock_under_100us in a follow-up cleanup PR; not blocking.
+
+============================================================
+Phase 1.5 Linux additions (OQ-2 resolution — Q58, Q24)
+============================================================
+
+PipeWire-first / ALSA-fallback (Q58)
+  T36  _linux_preferred_hostapi() returns 'PipeWire' when sounddevice
+       reports a 'PipeWire' HostAPI (mock verified; runs on all CI
+       platforms so the dispatch logic is always tested).
+  T37  _linux_preferred_hostapi() returns 'ALSA' when no 'PipeWire'
+       HostAPI is present in sd.query_hostapis() (e.g. this machine).
+  T38  open_stream() on Linux dispatches to _linux_preferred_hostapi()
+       and passes its result as the hostapi arg to _open_native_stream.
+  T39  open_stream() on Linux falls back to ALSA when the preferred
+       HostAPI raises AudioInitError (mirrors the WASAPI→MME pattern).
+
+Bluetooth filtering by name on Linux (Q24)
+  T40  list_devices() on Linux excludes devices whose names match the
+       bluez_ / hsp/hfp / a2dp Linux BT name patterns (hostapi is ALSA
+       on Linux, not 'Bluetooth', so the Windows hostapi filter is not
+       sufficient).
 """
 
 from __future__ import annotations
@@ -688,3 +709,88 @@ def test_T35_module_docstring_contains_gil_contract_terms():
     assert "cffi" in doc_lower, (
         "Module docstring must document the CFFI escalation path"
     )
+
+
+# ---------------------------------------------------------------
+# Phase 1.5 Linux additions (OQ-2 resolution — Q58, Q24)
+# ---------------------------------------------------------------
+
+def test_T36_linux_preferred_hostapi_returns_pipewire_when_available():
+    """Q58 (Phase 1.5): _linux_preferred_hostapi() must return 'PipeWire'
+    when PortAudio exposes a PipeWire HostAPI.  Tested on all CI platforms
+    via mock so the dispatch logic is always exercised (no skipif)."""
+    from unittest.mock import patch
+    from voxkit.audio.recorder import _linux_preferred_hostapi
+    fake_apis = [{"name": "ALSA"}, {"name": "PipeWire"}, {"name": "OSS"}]
+    with patch("sounddevice.query_hostapis", return_value=fake_apis):
+        assert _linux_preferred_hostapi() == "PipeWire"
+
+
+def test_T37_linux_preferred_hostapi_returns_alsa_when_no_pipewire():
+    """Q58: when no PipeWire HostAPI is registered (e.g. older distros or
+    this machine where PipeWire uses the ALSA compat layer), the function
+    must fall back to 'ALSA'."""
+    from unittest.mock import patch
+    from voxkit.audio.recorder import _linux_preferred_hostapi
+    fake_apis = [{"name": "ALSA"}, {"name": "OSS"}]
+    with patch("sounddevice.query_hostapis", return_value=fake_apis):
+        assert _linux_preferred_hostapi() == "ALSA"
+
+
+def test_T38_open_stream_linux_uses_preferred_hostapi():
+    """Q58: open_stream() on Linux must call _linux_preferred_hostapi()
+    and forward the result as the hostapi kwarg to _open_native_stream,
+    mirroring the WASAPI-first pattern on Windows."""
+    with patch("voxkit.audio.recorder._current_platform", return_value="Linux"), \
+         patch("voxkit.audio.recorder._linux_preferred_hostapi", return_value="PipeWire"), \
+         patch("voxkit.audio.recorder._open_native_stream", return_value=MagicMock()) as opener:
+        from voxkit.audio.recorder import Recorder
+        Recorder().open_stream("0")
+        first_api = opener.call_args_list[0].kwargs.get("hostapi")
+        assert first_api == "PipeWire"
+
+
+def test_T39_open_stream_linux_falls_back_to_alsa_on_pipewire_failure():
+    """Q58: if the preferred HostAPI raises AudioInitError, open_stream()
+    must retry with ALSA and set active_hostapi accordingly (mirrors the
+    WASAPI→MME fallback on Windows)."""
+    from voxkit.audio.recorder import Recorder, AudioInitError
+
+    call_count = [0]
+
+    def fake_open(**kwargs):
+        call_count[0] += 1
+        if kwargs.get("hostapi") == "PipeWire":
+            raise AudioInitError("PipeWire init failed")
+        return MagicMock()
+
+    with patch("voxkit.audio.recorder._current_platform", return_value="Linux"), \
+         patch("voxkit.audio.recorder._linux_preferred_hostapi", return_value="PipeWire"), \
+         patch("voxkit.audio.recorder._open_native_stream", side_effect=fake_open):
+        rec = Recorder()
+        rec.open_stream("0")
+        assert rec.active_hostapi == "ALSA"
+        assert call_count[0] == 2   # PipeWire attempt + ALSA fallback
+
+
+def test_T40_list_devices_linux_filters_bluetooth_by_name():
+    """Q24 (Phase 1.5): on Linux, Bluetooth audio devices appear as ALSA
+    devices (hostapi != 'Bluetooth'), so the hostapi filter alone is
+    insufficient.  list_devices() must also filter by name patterns
+    such as 'bluez_sink', 'hsp/hfp', and 'a2dp'."""
+    from voxkit.audio.recorder import Recorder
+    fake_devices = [
+        {"id": "0", "name": "Built-in Mic",                     "hostapi": "ALSA", "rate": 48000},
+        {"id": "1", "name": "bluez_sink.AA_BB_CC_DD_EE_FF",     "hostapi": "ALSA", "rate": 16000},
+        {"id": "2", "name": "HSP/HFP Voice Gateway",            "hostapi": "ALSA", "rate": 16000},
+        {"id": "3", "name": "A2DP Sink (Headphones)",           "hostapi": "ALSA", "rate": 44100},
+        {"id": "4", "name": "USB Audio Microphone",             "hostapi": "ALSA", "rate": 48000},
+    ]
+    with patch("voxkit.audio.recorder._raw_device_list", return_value=fake_devices), \
+         patch("voxkit.audio.recorder._current_platform", return_value="Linux"):
+        names = [d.name for d in Recorder().list_devices()]
+    assert "Built-in Mic" in names
+    assert "USB Audio Microphone" in names
+    assert "bluez_sink.AA_BB_CC_DD_EE_FF" not in names
+    assert "HSP/HFP Voice Gateway" not in names
+    assert "A2DP Sink (Headphones)" not in names

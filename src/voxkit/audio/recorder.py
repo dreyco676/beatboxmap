@@ -76,6 +76,41 @@ _PRIORITY_TABLE: dict[str, Any] = {
     "Linux": ("SCHED_FIFO", 80),
 }
 
+# ---------------------------------------------------------------
+# Linux audio-backend helpers (Q58 Phase 1.5)
+# ---------------------------------------------------------------
+
+_LINUX_BT_PATTERNS = ("bluez_", "bluetooth", "hsp/hfp", "a2dp")
+
+
+def _is_linux_bluetooth_device(name: str) -> bool:
+    """Return True if the device name indicates a Bluetooth audio device on Linux.
+
+    On Linux, Bluetooth devices are registered under the ALSA HostAPI (PipeWire
+    exposes them via the bluez-alsa or PipeWire-ALSA compat layer), so the
+    Windows-style hostapi=='Bluetooth' filter is not sufficient.  Name-pattern
+    matching is the correct approach (Q24 Phase 1.5).
+    """
+    lower = name.lower()
+    return any(p in lower for p in _LINUX_BT_PATTERNS)
+
+
+def _linux_preferred_hostapi() -> str:
+    """Return 'PipeWire' if PortAudio exposes a PipeWire HostAPI, else 'ALSA'.
+
+    On most current Linux Mint systems PipeWire is transparent via the ALSA
+    compat layer and sounddevice reports only 'ALSA'.  On systems where
+    PortAudio is built with native PipeWire support a 'PipeWire' entry appears
+    in query_hostapis(); in that case we prefer it per Q58.
+    """
+    try:
+        import sounddevice as sd
+        if any(a["name"] == "PipeWire" for a in sd.query_hostapis()):
+            return "PipeWire"
+    except Exception:
+        pass
+    return "ALSA"
+
 
 def _current_platform() -> str:
     return _platform_mod.system()
@@ -318,12 +353,18 @@ class Recorder:
         self._chunks: list[np.ndarray] = []
 
     def list_devices(self) -> list[DeviceInfo]:
+        plat = _current_platform()
         raw = _raw_device_list()
-        return [
-            DeviceInfo(id=d["id"], name=d["name"], default_rate=d["rate"])
-            for d in raw
-            if d.get("hostapi") != "Bluetooth"
-        ]
+        result = []
+        for d in raw:
+            if d.get("hostapi") == "Bluetooth":
+                continue
+            # Q24 Phase 1.5: on Linux, BT devices appear as ALSA devices;
+            # filter them by name pattern instead of hostapi label.
+            if plat == "Linux" and _is_linux_bluetooth_device(d.get("name", "")):
+                continue
+            result.append(DeviceInfo(id=d["id"], name=d["name"], default_rate=d["rate"]))
+        return result
 
     def open_stream(self, device_id: str) -> None:
         if self._stream is not None:
@@ -343,9 +384,24 @@ class Recorder:
             except AudioInitError:
                 stream = _open_native_stream(device_id=device_id, hostapi="MME", sample_rate=16_000)
                 self.active_hostapi = "MME"
+        elif plat == "Linux":
+            # Q58 Phase 1.5: prefer PipeWire when its PortAudio plugin is loaded;
+            # fall back to ALSA (which is also the transparent path on systems
+            # where PipeWire uses the ALSA compat layer).
+            preferred = _linux_preferred_hostapi()
+            try:
+                stream = _open_native_stream(device_id=device_id, hostapi=preferred, sample_rate=16_000)
+                self.active_hostapi = preferred
+            except AudioInitError:
+                if preferred != "ALSA":
+                    stream = _open_native_stream(device_id=device_id, hostapi="ALSA", sample_rate=16_000)
+                    self.active_hostapi = "ALSA"
+                else:
+                    raise
         else:
-            stream = _open_native_stream(device_id=device_id, hostapi="ALSA", sample_rate=16_000)
-            self.active_hostapi = "ALSA"
+            # macOS (Phase 2) and other platforms — use sounddevice default.
+            stream = _open_native_stream(device_id=device_id, hostapi="default", sample_rate=16_000)
+            self.active_hostapi = "default"
 
         self._chunks = []
         self._stream = stream
